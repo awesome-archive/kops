@@ -21,7 +21,7 @@ import (
 
 	"github.com/denverdino/aliyungo/common"
 	"github.com/denverdino/aliyungo/ecs"
-	"k8s.io/klog"
+	"k8s.io/klog/v2"
 	"k8s.io/kops/upup/pkg/fi"
 	"k8s.io/kops/upup/pkg/fi/cloudup/aliup"
 	"k8s.io/kops/upup/pkg/fi/cloudup/terraform"
@@ -31,7 +31,7 @@ const (
 	NatType = "Nat"
 )
 
-//go:generate fitask -type=EIP
+// +kops:fitask
 type EIP struct {
 	Name      *string
 	Lifecycle *fi.Lifecycle
@@ -46,7 +46,7 @@ type EIP struct {
 var _ fi.CompareWithID = &EIP{}
 
 func (e *EIP) CompareWithID() *string {
-	return e.Name
+	return e.ID
 }
 
 func (e *EIP) Find(c *fi.Context) (*EIP, error) {
@@ -141,8 +141,8 @@ type terraformEip struct {
 }
 
 type terraformEipAssociation struct {
-	InstanceID   *terraform.Literal `json:"instance_id,omitempty"`
-	AllocationID *terraform.Literal `json:"allocation_id,omitempty"`
+	InstanceID   *terraform.Literal `json:"instance_id,omitempty" cty:"instance_id"`
+	AllocationID *terraform.Literal `json:"allocation_id,omitempty" cty:"allocation_id"`
 }
 
 func (_ *EIP) RenderTerraform(t *terraform.TerraformTarget, a, e, changes *EIP) error {

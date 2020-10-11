@@ -1,5 +1,5 @@
 /*
-Copyright 2016 The Kubernetes Authors.
+Copyright 2019 The Kubernetes Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -17,13 +17,14 @@ limitations under the License.
 package kutil
 
 import (
+	"context"
 	"fmt"
 	"time"
 
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/autoscaling"
 	"github.com/aws/aws-sdk-go/service/ec2"
-	"k8s.io/klog"
+	"k8s.io/klog/v2"
 	"k8s.io/kops"
 	api "k8s.io/kops/pkg/apis/kops"
 	"k8s.io/kops/pkg/apis/kops/registry"
@@ -50,7 +51,7 @@ type ConvertKubeupCluster struct {
 	Channel *api.Channel
 }
 
-func (x *ConvertKubeupCluster) Upgrade() error {
+func (x *ConvertKubeupCluster) Upgrade(ctx context.Context) error {
 	awsCloud := x.Cloud.(awsup.AWSCloud)
 
 	cluster := x.ClusterConfig
@@ -96,7 +97,7 @@ func (x *ConvertKubeupCluster) Upgrade() error {
 		}
 	}
 
-	err = cloudup.PerformAssignments(cluster)
+	err = cloudup.PerformAssignments(cluster, awsCloud)
 	if err != nil {
 		return fmt.Errorf("error populating cluster defaults: %v", err)
 	}
@@ -107,7 +108,7 @@ func (x *ConvertKubeupCluster) Upgrade() error {
 	}
 
 	assetBuilder := assets.NewAssetBuilder(cluster, "")
-	fullCluster, err := cloudup.PopulateClusterSpec(x.Clientset, cluster, assetBuilder)
+	fullCluster, err := cloudup.PopulateClusterSpec(x.Clientset, cluster, x.Cloud, assetBuilder)
 	if err != nil {
 		return err
 	}
@@ -266,9 +267,8 @@ func (x *ConvertKubeupCluster) Upgrade() error {
 						continue
 					}
 					return fmt.Errorf("error detaching volume %q from master instance %q: %v", volumeID, masterInstanceID, err)
-				} else {
-					break
 				}
+				break
 			}
 		}
 	}
@@ -465,7 +465,7 @@ func (x *ConvertKubeupCluster) Upgrade() error {
 		}
 	}
 
-	err = registry.CreateClusterConfig(x.Clientset, cluster, x.InstanceGroups)
+	err = registry.CreateClusterConfig(ctx, x.Clientset, cluster, x.InstanceGroups, nil)
 	if err != nil {
 		return fmt.Errorf("error writing updated configuration: %v", err)
 	}
@@ -480,18 +480,21 @@ func (x *ConvertKubeupCluster) Upgrade() error {
 		return fmt.Errorf("error writing completed cluster spec: %v", err)
 	}
 
-	oldCACertPool, err := oldKeyStore.CertificatePool(fi.CertificateId_CA, true)
+	oldCACertPool, err := oldKeyStore.FindCertificatePool(fi.CertificateIDCA)
 	if err != nil {
 		return fmt.Errorf("error reading old CA certs: %v", err)
 	}
+	if oldCACertPool == nil {
+		return fmt.Errorf("cannot find certificate pool %q", fi.CertificateIDCA)
+	}
 	for _, ca := range oldCACertPool.Secondary {
-		err := newKeyStore.AddCert(fi.CertificateId_CA, ca)
+		err := newKeyStore.AddCert(fi.CertificateIDCA, ca)
 		if err != nil {
 			return fmt.Errorf("error importing old CA certs: %v", err)
 		}
 	}
 	if oldCACertPool.Primary != nil {
-		err := newKeyStore.AddCert(fi.CertificateId_CA, oldCACertPool.Primary)
+		err := newKeyStore.AddCert(fi.CertificateIDCA, oldCACertPool.Primary)
 		if err != nil {
 			return fmt.Errorf("error importing old CA certs: %v", err)
 		}

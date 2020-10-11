@@ -1,5 +1,5 @@
 /*
-Copyright 2016 The Kubernetes Authors.
+Copyright 2019 The Kubernetes Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -22,7 +22,7 @@ import (
 	"k8s.io/client-go/rest"
 	"k8s.io/client-go/tools/clientcmd"
 	clientcmdapi "k8s.io/client-go/tools/clientcmd/api"
-	"k8s.io/klog"
+	"k8s.io/klog/v2"
 )
 
 // KubeconfigBuilder builds a kubecfg file
@@ -33,6 +33,7 @@ type KubeconfigBuilder struct {
 	Context   string
 	Namespace string
 
+	User            string
 	KubeBearerToken string
 	KubeUser        string
 	KubePassword    string
@@ -41,18 +42,16 @@ type KubeconfigBuilder struct {
 	ClientCert []byte
 	ClientKey  []byte
 
-	configAccess clientcmd.ConfigAccess
+	AuthenticationExec []string
 }
 
 // Create new KubeconfigBuilder
-func NewKubeconfigBuilder(configAccess clientcmd.ConfigAccess) *KubeconfigBuilder {
-	c := &KubeconfigBuilder{}
-	c.configAccess = configAccess
-	return c
+func NewKubeconfigBuilder() *KubeconfigBuilder {
+	return &KubeconfigBuilder{}
 }
 
-func (b *KubeconfigBuilder) DeleteKubeConfig() error {
-	config, err := b.configAccess.GetStartingConfig()
+func (b *KubeconfigBuilder) DeleteKubeConfig(configAccess clientcmd.ConfigAccess) error {
+	config, err := configAccess.GetStartingConfig()
 	if err != nil {
 		return fmt.Errorf("error loading kubeconfig: %v", err)
 	}
@@ -71,7 +70,7 @@ func (b *KubeconfigBuilder) DeleteKubeConfig() error {
 		config.CurrentContext = ""
 	}
 
-	if err := clientcmd.ModifyConfig(b.configAccess, *config, false); err != nil {
+	if err := clientcmd.ModifyConfig(configAccess, *config, false); err != nil {
 		return fmt.Errorf("error writing kubeconfig: %v", err)
 	}
 
@@ -100,8 +99,8 @@ func (c *KubeconfigBuilder) BuildRestConfig() (*rest.Config, error) {
 }
 
 // Write out a new kubeconfig
-func (b *KubeconfigBuilder) WriteKubecfg() error {
-	config, err := b.configAccess.GetStartingConfig()
+func (b *KubeconfigBuilder) WriteKubecfg(configAccess clientcmd.ConfigAccess) error {
+	config, err := configAccess.GetStartingConfig()
 	if err != nil {
 		return fmt.Errorf("error reading kubeconfig: %v", err)
 	}
@@ -116,17 +115,7 @@ func (b *KubeconfigBuilder) WriteKubecfg() error {
 			cluster = clientcmdapi.NewCluster()
 		}
 		cluster.Server = b.Server
-
-		if b.CACert == nil {
-			// For now, we assume that the cluster has a "real" cert issued by a CA
-			cluster.InsecureSkipTLSVerify = false
-			cluster.CertificateAuthority = ""
-			cluster.CertificateAuthorityData = nil
-		} else {
-			cluster.InsecureSkipTLSVerify = false
-			cluster.CertificateAuthority = ""
-			cluster.CertificateAuthorityData = b.CACert
-		}
+		cluster.CertificateAuthorityData = b.CACert
 
 		if config.Clusters == nil {
 			config.Clusters = make(map[string]*clientcmdapi.Cluster)
@@ -134,7 +123,8 @@ func (b *KubeconfigBuilder) WriteKubecfg() error {
 		config.Clusters[b.Context] = cluster
 	}
 
-	{
+	// If the user has the same name as the context, it is the admin user
+	if b.User == b.Context {
 		authInfo := config.AuthInfos[b.Context]
 		if authInfo == nil {
 			authInfo = clientcmdapi.NewAuthInfo()
@@ -154,10 +144,22 @@ func (b *KubeconfigBuilder) WriteKubecfg() error {
 			authInfo.ClientKeyData = b.ClientKey
 		}
 
+		if len(b.AuthenticationExec) != 0 {
+			authInfo.Exec = &clientcmdapi.ExecConfig{
+				APIVersion: "client.authentication.k8s.io/v1beta1",
+				Command:    b.AuthenticationExec[0],
+				Args:       b.AuthenticationExec[1:],
+			}
+		}
+
 		if config.AuthInfos == nil {
 			config.AuthInfos = make(map[string]*clientcmdapi.AuthInfo)
 		}
 		config.AuthInfos[b.Context] = authInfo
+	} else if b.User != "" {
+		if config.AuthInfos[b.User] == nil {
+			return fmt.Errorf("could not find user %q", b.User)
+		}
 	}
 
 	// If we have a bearer token, also create a credential entry with basic auth
@@ -186,7 +188,9 @@ func (b *KubeconfigBuilder) WriteKubecfg() error {
 		}
 
 		context.Cluster = b.Context
-		context.AuthInfo = b.Context
+		if b.User != "" {
+			context.AuthInfo = b.User
+		}
 
 		if b.Namespace != "" {
 			context.Namespace = b.Namespace
@@ -200,7 +204,7 @@ func (b *KubeconfigBuilder) WriteKubecfg() error {
 
 	config.CurrentContext = b.Context
 
-	if err := clientcmd.ModifyConfig(b.configAccess, *config, true); err != nil {
+	if err := clientcmd.ModifyConfig(configAccess, *config, true); err != nil {
 		return err
 	}
 

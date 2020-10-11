@@ -1,4 +1,4 @@
-load("@io_bazel_rules_go//go:def.bzl", "go_library")
+load("@io_bazel_rules_go//go:def.bzl", "go_library", "go_test")
 
 go_library(
     name = "go_default_library",
@@ -22,6 +22,13 @@ go_library(
         "//vendor/github.com/gophercloud/gophercloud/openstack/dns/v2/recordsets:go_default_library",
         "//vendor/github.com/gophercloud/gophercloud/openstack/dns/v2/zones:go_default_library",
         "//vendor/github.com/gophercloud/gophercloud/pagination:go_default_library",
-        "//vendor/k8s.io/klog:go_default_library",
+        "//vendor/k8s.io/klog/v2:go_default_library",
     ],
+)
+
+go_test(
+    name = "go_default_test",
+    srcs = ["designate_test.go"],
+    embed = [":go_default_library"],
+    deps = ["//dnsprovider/pkg/dnsprovider/tests:go_default_library"],
 )

@@ -1,5 +1,5 @@
 /*
-Copyright 2016 The Kubernetes Authors.
+Copyright 2019 The Kubernetes Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -17,7 +17,6 @@ limitations under the License.
 package nodeup
 
 import (
-	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -28,8 +27,8 @@ import (
 	"strings"
 	"time"
 
-	"k8s.io/kops/nodeup/pkg/distros"
 	"k8s.io/kops/nodeup/pkg/model"
+	"k8s.io/kops/nodeup/pkg/model/networking"
 	api "k8s.io/kops/pkg/apis/kops"
 	"k8s.io/kops/pkg/apis/kops/registry"
 	"k8s.io/kops/pkg/apis/nodeup"
@@ -40,15 +39,14 @@ import (
 	"k8s.io/kops/upup/pkg/fi/nodeup/nodetasks"
 	"k8s.io/kops/upup/pkg/fi/secrets"
 	"k8s.io/kops/upup/pkg/fi/utils"
+	"k8s.io/kops/util/pkg/architectures"
+	"k8s.io/kops/util/pkg/distributions"
 	"k8s.io/kops/util/pkg/vfs"
 
 	"github.com/aws/aws-sdk-go/aws"
-	"github.com/aws/aws-sdk-go/aws/ec2metadata"
-	"github.com/aws/aws-sdk-go/aws/request"
 	"github.com/aws/aws-sdk-go/aws/session"
 	"github.com/aws/aws-sdk-go/service/ec2"
-	"k8s.io/apimachinery/pkg/util/sets"
-	"k8s.io/klog"
+	"k8s.io/klog/v2"
 )
 
 // MaxTaskDuration is the amount of time to keep trying for; we retry for a long time - there is not really any great fallback
@@ -58,8 +56,6 @@ const MaxTaskDuration = 365 * 24 * time.Hour
 type NodeUpCommand struct {
 	CacheDir       string
 	ConfigLocation string
-	FSRoot         string
-	ModelDir       vfs.Path
 	Target         string
 	cluster        *api.Cluster
 	config         *nodeup.Config
@@ -68,10 +64,6 @@ type NodeUpCommand struct {
 
 // Run is responsible for perform the nodeup process
 func (c *NodeUpCommand) Run(out io.Writer) error {
-	if c.FSRoot == "" {
-		return fmt.Errorf("FSRoot is required")
-	}
-
 	if c.ConfigLocation != "" {
 		config, err := vfs.Context.ReadFile(c.ConfigLocation)
 		if err != nil {
@@ -88,13 +80,6 @@ func (c *NodeUpCommand) Run(out io.Writer) error {
 
 	if c.CacheDir == "" {
 		return fmt.Errorf("CacheDir is required")
-	}
-	assetStore := fi.NewAssetStore(c.CacheDir)
-	for _, asset := range c.config.Assets {
-		err := assetStore.Add(asset)
-		if err != nil {
-			return fmt.Errorf("error adding asset %q: %v", asset, err)
-		}
 	}
 
 	var configBase vfs.Path
@@ -162,34 +147,42 @@ func (c *NodeUpCommand) Run(out io.Writer) error {
 		klog.Warningf("No instance group defined in nodeup config")
 	}
 
-	err := evaluateSpec(c.cluster)
+	err := evaluateSpec(c)
 	if err != nil {
 		return err
 	}
 
-	distribution, err := distros.FindDistribution(c.FSRoot)
+	architecture, err := architectures.FindArchitecture()
+	if err != nil {
+		return fmt.Errorf("error determining OS architecture: %v", err)
+	}
+
+	distribution, err := distributions.FindDistribution("/")
 	if err != nil {
 		return fmt.Errorf("error determining OS distribution: %v", err)
 	}
 
-	osTags := distribution.BuildTags()
-
-	nodeTags := sets.NewString()
-	nodeTags.Insert(osTags...)
-	nodeTags.Insert(c.config.Tags...)
-
-	klog.Infof("Config tags: %v", c.config.Tags)
-	klog.Infof("OS tags: %v", osTags)
+	configAssets := c.config.Assets[architecture]
+	assetStore := fi.NewAssetStore(c.CacheDir)
+	for _, asset := range configAssets {
+		err := assetStore.Add(asset)
+		if err != nil {
+			return fmt.Errorf("error adding asset %q: %v", asset, err)
+		}
+	}
 
 	modelContext := &model.NodeupModelContext{
-		Architecture:  model.ArchitectureAmd64,
+		Architecture:  architecture,
 		Assets:        assetStore,
 		Cluster:       c.cluster,
+		ConfigBase:    configBase,
 		Distribution:  distribution,
 		InstanceGroup: c.instanceGroup,
 		NodeupConfig:  c.config,
 	}
 
+	var secretStore fi.SecretStore
+	var keyStore fi.Keystore
 	if c.cluster.Spec.SecretStore != "" {
 		klog.Infof("Building SecretStore at %q", c.cluster.Spec.SecretStore)
 		p, err := vfs.Context.BuildVfsPath(c.cluster.Spec.SecretStore)
@@ -197,7 +190,8 @@ func (c *NodeUpCommand) Run(out io.Writer) error {
 			return fmt.Errorf("error building secret store path: %v", err)
 		}
 
-		modelContext.SecretStore = secrets.NewVFSSecretStore(c.cluster, p)
+		secretStore = secrets.NewVFSSecretStore(c.cluster, p)
+		modelContext.SecretStore = secretStore
 	} else {
 		return fmt.Errorf("SecretStore not set")
 	}
@@ -209,7 +203,8 @@ func (c *NodeUpCommand) Run(out io.Writer) error {
 			return fmt.Errorf("error building key store path: %v", err)
 		}
 
-		modelContext.KeyStore = fi.NewVFSCAStore(c.cluster, p, false)
+		modelContext.KeyStore = fi.NewVFSCAStore(c.cluster, p)
+		keyStore = modelContext.KeyStore
 	} else {
 		return fmt.Errorf("KeyStore not set")
 	}
@@ -222,10 +217,13 @@ func (c *NodeUpCommand) Run(out io.Writer) error {
 		return err
 	}
 
-	loader := NewLoader(c.config, c.cluster, assetStore, nodeTags)
+	loader := &Loader{}
+	loader.Builders = append(loader.Builders, &model.NTPBuilder{NodeupModelContext: modelContext})
+	loader.Builders = append(loader.Builders, &model.MiscUtilsBuilder{NodeupModelContext: modelContext})
 	loader.Builders = append(loader.Builders, &model.DirectoryBuilder{NodeupModelContext: modelContext})
 	loader.Builders = append(loader.Builders, &model.UpdateServiceBuilder{NodeupModelContext: modelContext})
 	loader.Builders = append(loader.Builders, &model.VolumesBuilder{NodeupModelContext: modelContext})
+	loader.Builders = append(loader.Builders, &model.ContainerdBuilder{NodeupModelContext: modelContext})
 	loader.Builders = append(loader.Builders, &model.DockerBuilder{NodeupModelContext: modelContext})
 	loader.Builders = append(loader.Builders, &model.ProtokubeBuilder{NodeupModelContext: modelContext})
 	loader.Builders = append(loader.Builders, &model.CloudConfigBuilder{NodeupModelContext: modelContext})
@@ -240,73 +238,36 @@ func (c *NodeUpCommand) Run(out io.Writer) error {
 	loader.Builders = append(loader.Builders, &model.PackagesBuilder{NodeupModelContext: modelContext})
 	loader.Builders = append(loader.Builders, &model.SecretBuilder{NodeupModelContext: modelContext})
 	loader.Builders = append(loader.Builders, &model.FirewallBuilder{NodeupModelContext: modelContext})
-	loader.Builders = append(loader.Builders, &model.NetworkBuilder{NodeupModelContext: modelContext})
 	loader.Builders = append(loader.Builders, &model.SysctlBuilder{NodeupModelContext: modelContext})
 	loader.Builders = append(loader.Builders, &model.KubeAPIServerBuilder{NodeupModelContext: modelContext})
 	loader.Builders = append(loader.Builders, &model.KubeControllerManagerBuilder{NodeupModelContext: modelContext})
 	loader.Builders = append(loader.Builders, &model.KubeSchedulerBuilder{NodeupModelContext: modelContext})
 	loader.Builders = append(loader.Builders, &model.EtcdManagerTLSBuilder{NodeupModelContext: modelContext})
-	if c.cluster.Spec.Networking.Kuberouter == nil {
-		loader.Builders = append(loader.Builders, &model.KubeProxyBuilder{NodeupModelContext: modelContext})
-	} else {
-		loader.Builders = append(loader.Builders, &model.KubeRouterBuilder{NodeupModelContext: modelContext})
-	}
-	if c.cluster.Spec.Networking.Calico != nil || c.cluster.Spec.Networking.Cilium != nil {
-		loader.Builders = append(loader.Builders, &model.EtcdTLSBuilder{NodeupModelContext: modelContext})
-	}
+	loader.Builders = append(loader.Builders, &model.KubeProxyBuilder{NodeupModelContext: modelContext})
+	loader.Builders = append(loader.Builders, &model.KopsControllerBuilder{NodeupModelContext: modelContext})
 
-	if c.cluster.Spec.Networking.LyftVPC != nil {
+	loader.Builders = append(loader.Builders, &networking.CommonBuilder{NodeupModelContext: modelContext})
+	loader.Builders = append(loader.Builders, &networking.CalicoBuilder{NodeupModelContext: modelContext})
+	loader.Builders = append(loader.Builders, &networking.CiliumBuilder{NodeupModelContext: modelContext})
+	loader.Builders = append(loader.Builders, &networking.KuberouterBuilder{NodeupModelContext: modelContext})
+	loader.Builders = append(loader.Builders, &networking.LyftVPCBuilder{NodeupModelContext: modelContext})
 
-		loader.TemplateFunctions["SubnetTags"] = func() (string, error) {
-			tags := map[string]string{
-				"Type": "pod",
-			}
-			if len(c.cluster.Spec.Networking.LyftVPC.SubnetTags) > 0 {
-				tags = c.cluster.Spec.Networking.LyftVPC.SubnetTags
-			}
-
-			bytes, err := json.Marshal(tags)
-			if err != nil {
-				return "", err
-			}
-			return string(bytes), nil
-		}
-
-		loader.TemplateFunctions["NodeSecurityGroups"] = func() (string, error) {
-			// use the same security groups as the node
-			ids, err := evaluateSecurityGroups(c.cluster.Spec.NetworkID)
-			if err != nil {
-				return "", err
-			}
-			bytes, err := json.Marshal(ids)
-			if err != nil {
-				return "", err
-			}
-			return string(bytes), nil
-		}
-	}
-
-	taskMap, err := loader.Build(c.ModelDir)
+	loader.Builders = append(loader.Builders, &model.BootstrapClientBuilder{NodeupModelContext: modelContext})
+	taskMap, err := loader.Build()
 	if err != nil {
 		return fmt.Errorf("error building loader: %v", err)
 	}
 
-	for i, image := range c.config.Images {
+	for i, image := range c.config.Images[architecture] {
 		taskMap["LoadImage."+strconv.Itoa(i)] = &nodetasks.LoadImageTask{
 			Sources: image.Sources,
 			Hash:    image.Hash,
+			Runtime: c.cluster.Spec.ContainerRuntime,
 		}
 	}
-	if c.config.ProtokubeImage != nil {
-		taskMap["LoadImage.protokube"] = &nodetasks.LoadImageTask{
-			Sources: c.config.ProtokubeImage.Sources,
-			Hash:    c.config.ProtokubeImage.Hash,
-		}
-	}
+	// Protokube load image task is in ProtokubeBuilder
 
 	var cloud fi.Cloud
-	var keyStore fi.Keystore
-	var secretStore fi.SecretStore
 	var target fi.Target
 	checkExisting := true
 
@@ -314,19 +275,18 @@ func (c *NodeUpCommand) Run(out io.Writer) error {
 	case "direct":
 		target = &local.LocalTarget{
 			CacheDir: c.CacheDir,
-			Tags:     nodeTags,
 		}
 	case "dryrun":
 		assetBuilder := assets.NewAssetBuilder(c.cluster, "")
 		target = fi.NewDryRunTarget(assetBuilder, out)
 	case "cloudinit":
 		checkExisting = false
-		target = cloudinit.NewCloudInitTarget(out, nodeTags)
+		target = cloudinit.NewCloudInitTarget(out)
 	default:
 		return fmt.Errorf("unsupported target type %q", c.Target)
 	}
 
-	context, err := fi.NewContext(target, nil, cloud, keyStore, secretStore, configBase, checkExisting, taskMap)
+	context, err := fi.NewContext(target, c.cluster, cloud, keyStore, secretStore, configBase, checkExisting, taskMap)
 	if err != nil {
 		klog.Exitf("error building context: %v", err)
 	}
@@ -348,89 +308,43 @@ func (c *NodeUpCommand) Run(out io.Writer) error {
 	return nil
 }
 
-func evaluateSpec(c *api.Cluster) error {
+func evaluateSpec(c *NodeUpCommand) error {
 	var err error
 
-	c.Spec.Kubelet.HostnameOverride, err = evaluateHostnameOverride(c.Spec.Kubelet.HostnameOverride)
+	c.cluster.Spec.Kubelet.HostnameOverride, err = evaluateHostnameOverride(c.cluster.Spec.Kubelet.HostnameOverride)
 	if err != nil {
 		return err
 	}
 
-	c.Spec.MasterKubelet.HostnameOverride, err = evaluateHostnameOverride(c.Spec.MasterKubelet.HostnameOverride)
+	c.cluster.Spec.MasterKubelet.HostnameOverride, err = evaluateHostnameOverride(c.cluster.Spec.MasterKubelet.HostnameOverride)
 	if err != nil {
 		return err
 	}
 
-	if c.Spec.KubeProxy != nil {
-		c.Spec.KubeProxy.HostnameOverride, err = evaluateHostnameOverride(c.Spec.KubeProxy.HostnameOverride)
+	c.config.KubeletConfig.HostnameOverride, err = evaluateHostnameOverride(c.config.KubeletConfig.HostnameOverride)
+	if err != nil {
+		return err
+	}
+
+	if c.cluster.Spec.KubeProxy != nil {
+		c.cluster.Spec.KubeProxy.HostnameOverride, err = evaluateHostnameOverride(c.cluster.Spec.KubeProxy.HostnameOverride)
 		if err != nil {
 			return err
 		}
-		c.Spec.KubeProxy.BindAddress, err = evaluateBindAddress(c.Spec.KubeProxy.BindAddress)
+		c.cluster.Spec.KubeProxy.BindAddress, err = evaluateBindAddress(c.cluster.Spec.KubeProxy.BindAddress)
 		if err != nil {
 			return err
 		}
 	}
 
-	if c.Spec.Docker != nil {
-		err = evaluateDockerSpecStorage(c.Spec.Docker)
+	if c.cluster.Spec.Docker != nil {
+		err = evaluateDockerSpecStorage(c.cluster.Spec.Docker)
 		if err != nil {
 			return err
 		}
 	}
 
 	return nil
-}
-
-func evaluateSecurityGroups(vpcId string) ([]string, error) {
-	config := aws.NewConfig()
-	config = config.WithCredentialsChainVerboseErrors(true)
-
-	s, err := session.NewSession(config)
-	if err != nil {
-		return nil, fmt.Errorf("error starting new AWS session: %v", err)
-	}
-	s.Handlers.Send.PushFront(func(r *request.Request) {
-		// Log requests
-		klog.V(4).Infof("AWS API Request: %s/%s", r.ClientInfo.ServiceName, r.Operation.Name)
-	})
-
-	metadata := ec2metadata.New(s, config)
-
-	region, err := metadata.Region()
-	if err != nil {
-		return nil, fmt.Errorf("error querying ec2 metadata service (for az/region): %v", err)
-	}
-
-	sgNames, err := metadata.GetMetadata("security-groups")
-	if err != nil {
-		return nil, fmt.Errorf("error querying ec2 metadata service (for security-groups): %v", err)
-	}
-	svc := ec2.New(s, config.WithRegion(region))
-
-	result, err := svc.DescribeSecurityGroups(&ec2.DescribeSecurityGroupsInput{
-		Filters: []*ec2.Filter{
-			{
-				Name:   aws.String("group-name"),
-				Values: aws.StringSlice(strings.Fields(sgNames)),
-			},
-			{
-				Name:   aws.String("vpc-id"),
-				Values: []*string{aws.String(vpcId)},
-			},
-		},
-	})
-
-	if err != nil {
-		return nil, fmt.Errorf("error looking up instance security group ids: %v", err)
-	}
-	var sgIds []string
-	for _, group := range result.SecurityGroups {
-		sgIds = append(sgIds, *group.GroupId)
-	}
-
-	return sgIds, nil
-
 }
 
 func evaluateHostnameOverride(hostnameOverride string) (string, error) {
@@ -441,25 +355,58 @@ func evaluateHostnameOverride(hostnameOverride string) (string, error) {
 	k = strings.ToLower(k)
 
 	if k == "@aws" {
-		// We recognize @aws as meaning "the local-hostname from the aws metadata service"
-		vBytes, err := vfs.Context.ReadFile("metadata://aws/meta-data/local-hostname")
+		// We recognize @aws as meaning "the private DNS name from AWS", to generate this we need to get a few pieces of information
+		azBytes, err := vfs.Context.ReadFile("metadata://aws/meta-data/placement/availability-zone")
 		if err != nil {
-			return "", fmt.Errorf("error reading local hostname from AWS metadata: %v", err)
+			return "", fmt.Errorf("error reading availability zone from AWS metadata: %v", err)
 		}
 
-		// The local-hostname gets it's hostname from the AWS DHCP Option Set, which
-		// may provide multiple hostnames separated by spaces. For now just choose
-		// the first one as the hostname.
-		domains := strings.Fields(string(vBytes))
-		if len(domains) == 0 {
-			klog.Warningf("Local hostname from AWS metadata service was empty")
-			return "", nil
+		instanceIDBytes, err := vfs.Context.ReadFile("metadata://aws/meta-data/instance-id")
+		if err != nil {
+			return "", fmt.Errorf("error reading instance-id from AWS metadata: %v", err)
+		}
+		instanceID := string(instanceIDBytes)
+
+		config := aws.NewConfig()
+		config = config.WithCredentialsChainVerboseErrors(true)
+
+		s, err := session.NewSession(config)
+		if err != nil {
+			return "", fmt.Errorf("error starting new AWS session: %v", err)
 		}
 
-		domain := domains[0]
-		klog.Infof("Using hostname from AWS metadata service: %s", domain)
+		svc := ec2.New(s, config.WithRegion(string(azBytes[:len(azBytes)-1])))
 
-		return domain, nil
+		result, err := svc.DescribeInstances(&ec2.DescribeInstancesInput{
+			InstanceIds: []*string{&instanceID},
+		})
+		if err != nil {
+			return "", fmt.Errorf("error describing instances: %v", err)
+		}
+
+		if len(result.Reservations) != 1 {
+			return "", fmt.Errorf("Too many reservations returned for the single instance-id")
+		}
+
+		if len(result.Reservations[0].Instances) != 1 {
+			return "", fmt.Errorf("Too many instances returned for the single instance-id")
+		}
+		return *(result.Reservations[0].Instances[0].PrivateDnsName), nil
+	}
+
+	if k == "@gce" {
+		// We recognize @gce as meaning the hostname from the GCE metadata service
+		// This lets us tolerate broken hostnames (i.e. systemd)
+		b, err := vfs.Context.ReadFile("metadata://gce/instance/hostname")
+		if err != nil {
+			return "", fmt.Errorf("error reading hostname from GCE metadata: %v", err)
+		}
+
+		// We only want to use the first portion of the fully-qualified name
+		// e.g. foo.c.project.internal => foo
+		fullyQualified := string(b)
+		bareHostname := strings.Split(fullyQualified, ".")[0]
+		return bareHostname, nil
 	}
 
 	if k == "@digitalocean" {
@@ -475,6 +422,23 @@ func evaluateHostnameOverride(hostnameOverride string) (string, error) {
 		}
 
 		return hostname, nil
+	}
+
+	if k == "@alicloud" {
+		// @alicloud means to use the "{az}.{instance-id}" of a instance as the hostname override
+		azBytes, err := vfs.Context.ReadFile("metadata://alicloud/zone-id")
+		if err != nil {
+			return "", fmt.Errorf("error reading zone-id from Alicloud metadata: %v", err)
+		}
+		az := string(azBytes)
+
+		instanceIDBytes, err := vfs.Context.ReadFile("metadata://alicloud/instance-id")
+		if err != nil {
+			return "", fmt.Errorf("error reading instance-id from Alicloud metadata: %v", err)
+		}
+		instanceID := string(instanceIDBytes)
+
+		return fmt.Sprintf("%s.%s", az, instanceID), nil
 	}
 
 	return hostnameOverride, nil

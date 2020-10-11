@@ -1,5 +1,5 @@
 /*
-Copyright 2016 The Kubernetes Authors.
+Copyright 2019 The Kubernetes Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -21,15 +21,26 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"io/ioutil"
+	"os"
+	"path/filepath"
+	"strings"
 
 	"github.com/spf13/cobra"
+	"golang.org/x/crypto/ssh"
+	corev1 "k8s.io/api/core/v1"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/cli-runtime/pkg/genericclioptions"
+	"k8s.io/client-go/kubernetes"
+	"k8s.io/klog/v2"
 	"k8s.io/kops/cmd/kops/util"
 	"k8s.io/kops/pkg/apis/kops"
+	"k8s.io/kops/pkg/dump"
 	"k8s.io/kops/pkg/resources"
 	resourceops "k8s.io/kops/pkg/resources/ops"
 	"k8s.io/kops/upup/pkg/fi/cloudup"
-	"k8s.io/kubernetes/pkg/kubectl/util/i18n"
-	"k8s.io/kubernetes/pkg/kubectl/util/templates"
+	"k8s.io/kubectl/pkg/util/i18n"
+	"k8s.io/kubectl/pkg/util/templates"
 )
 
 var (
@@ -48,10 +59,14 @@ type ToolboxDumpOptions struct {
 	Output string
 
 	ClusterName string
+
+	Dir        string
+	PrivateKey string
 }
 
 func (o *ToolboxDumpOptions) InitDefaults() {
 	o.Output = OutputYaml
+	o.PrivateKey = "~/.ssh/id_rsa"
 }
 
 func NewCmdToolboxDump(f *util.Factory, out io.Writer) *cobra.Command {
@@ -64,13 +79,15 @@ func NewCmdToolboxDump(f *util.Factory, out io.Writer) *cobra.Command {
 		Long:    toolboxDumpLong,
 		Example: toolboxDumpExample,
 		Run: func(cmd *cobra.Command, args []string) {
+			ctx := context.TODO()
+
 			if err := rootCommand.ProcessArgs(args); err != nil {
 				exitWithError(err)
 			}
 
 			options.ClusterName = rootCommand.ClusterName()
 
-			err := RunToolboxDump(f, out, options)
+			err := RunToolboxDump(ctx, f, out, options)
 			if err != nil {
 				exitWithError(err)
 			}
@@ -81,10 +98,14 @@ func NewCmdToolboxDump(f *util.Factory, out io.Writer) *cobra.Command {
 	// Yes please! (@kris-nova)
 	cmd.Flags().StringVarP(&options.Output, "output", "o", options.Output, "output format.  One of: yaml, json")
 
+	cmd.Flags().StringVar(&options.Dir, "dir", options.Dir, "target directory; if specified will collect logs and other information.")
+	cmd.Flags().StringVar(&options.PrivateKey, "private-key", options.PrivateKey, "private key to use for SSH acccess to instances")
+
 	return cmd
 }
 
-func RunToolboxDump(f *util.Factory, out io.Writer, options *ToolboxDumpOptions) error {
+func RunToolboxDump(ctx context.Context, f *util.Factory, out io.Writer, options *ToolboxDumpOptions) error {
+
 	clientset, err := f.Clientset()
 	if err != nil {
 		return err
@@ -94,7 +115,7 @@ func RunToolboxDump(f *util.Factory, out io.Writer, options *ToolboxDumpOptions)
 		return fmt.Errorf("ClusterName is required")
 	}
 
-	cluster, err := clientset.GetCluster(options.ClusterName)
+	cluster, err := clientset.GetCluster(ctx, options.ClusterName)
 	if err != nil {
 		return err
 	}
@@ -113,14 +134,85 @@ func RunToolboxDump(f *util.Factory, out io.Writer, options *ToolboxDumpOptions)
 	if err != nil {
 		return err
 	}
-	dump, err := resources.BuildDump(context.TODO(), cloud, resourceMap)
+	d, err := resources.BuildDump(ctx, cloud, resourceMap)
 	if err != nil {
 		return err
 	}
 
+	if options.Dir != "" {
+		privateKeyPath := options.PrivateKey
+		if strings.HasPrefix(privateKeyPath, "~/") {
+			privateKeyPath = filepath.Join(os.Getenv("HOME"), privateKeyPath[2:])
+		}
+		key, err := ioutil.ReadFile(privateKeyPath)
+		if err != nil {
+			return fmt.Errorf("error reading private key %q: %v", privateKeyPath, err)
+		}
+
+		signer, err := ssh.ParsePrivateKey(key)
+		if err != nil {
+			return fmt.Errorf("error parsing private key %q: %v", privateKeyPath, err)
+		}
+
+		cluster, err := GetCluster(ctx, f, options.ClusterName)
+		if err != nil {
+			return err
+		}
+
+		contextName := cluster.ObjectMeta.Name
+		clientGetter := genericclioptions.NewConfigFlags(true)
+		clientGetter.Context = &contextName
+
+		var nodes corev1.NodeList
+
+		config, err := clientGetter.ToRESTConfig()
+		if err != nil {
+			klog.Warningf("cannot load kubecfg settings for %q: %v", contextName, err)
+		} else {
+			k8sClient, err := kubernetes.NewForConfig(config)
+			if err != nil {
+				klog.Warningf("cannot build kube client for %q: %v", contextName, err)
+			} else {
+
+				nodeList, err := k8sClient.CoreV1().Nodes().List(ctx, metav1.ListOptions{})
+				if err != nil {
+					klog.Warningf("error listing nodes in cluster: %v", err)
+				} else {
+					nodes = *nodeList
+				}
+			}
+		}
+
+		// TODO: We need to find the correct SSH user, ideally per IP
+		sshUser := "ubuntu"
+		sshConfig := &ssh.ClientConfig{
+			User: sshUser,
+			Auth: []ssh.AuthMethod{
+				ssh.PublicKeys(signer),
+			},
+			HostKeyCallback: ssh.InsecureIgnoreHostKey(),
+		}
+
+		dumper := dump.NewLogDumper(sshConfig, options.Dir)
+
+		var additionalIPs []string
+		for _, instance := range d.Instances {
+			if len(instance.PublicAddresses) != 0 {
+				additionalIPs = append(additionalIPs, instance.PublicAddresses[0])
+				continue
+			}
+
+			klog.Warningf("no public IP for node %q", instance.Name)
+		}
+
+		if err := dumper.DumpAllNodes(ctx, nodes, additionalIPs); err != nil {
+			return fmt.Errorf("error dumping nodes: %v", err)
+		}
+	}
+
 	switch options.Output {
 	case OutputYaml:
-		b, err := kops.ToRawYaml(dump)
+		b, err := kops.ToRawYaml(d)
 		if err != nil {
 			return fmt.Errorf("error marshaling yaml: %v", err)
 		}
@@ -131,7 +223,7 @@ func RunToolboxDump(f *util.Factory, out io.Writer, options *ToolboxDumpOptions)
 		return nil
 
 	case OutputJSON:
-		b, err := json.MarshalIndent(dump, "", "  ")
+		b, err := json.MarshalIndent(d, "", "  ")
 		if err != nil {
 			return fmt.Errorf("error marshaling json: %v", err)
 		}
@@ -142,6 +234,6 @@ func RunToolboxDump(f *util.Factory, out io.Writer, options *ToolboxDumpOptions)
 		return nil
 
 	default:
-		return fmt.Errorf("Unsupported output format: %q", options.Output)
+		return fmt.Errorf("unsupported output format: %q", options.Output)
 	}
 }

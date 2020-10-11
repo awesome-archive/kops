@@ -1,5 +1,5 @@
 /*
-Copyright 2016 The Kubernetes Authors.
+Copyright 2019 The Kubernetes Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -23,14 +23,14 @@ import (
 
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/ec2"
-	"k8s.io/klog"
+	"k8s.io/klog/v2"
 	"k8s.io/kops/upup/pkg/fi"
 	"k8s.io/kops/upup/pkg/fi/cloudup/awsup"
 	"k8s.io/kops/upup/pkg/fi/cloudup/cloudformation"
 	"k8s.io/kops/upup/pkg/fi/cloudup/terraform"
 )
 
-//go:generate fitask -type=SecurityGroup
+// +kops:fitask
 type SecurityGroup struct {
 	Name      *string
 	Lifecycle *fi.Lifecycle
@@ -166,9 +166,10 @@ func (_ *SecurityGroup) RenderAWS(t *awsup.AWSAPITarget, a, e, changes *Security
 		klog.V(2).Infof("Creating SecurityGroup with Name:%q VPC:%q", *e.Name, *e.VPC.ID)
 
 		request := &ec2.CreateSecurityGroupInput{
-			VpcId:       e.VPC.ID,
-			GroupName:   e.Name,
-			Description: e.Description,
+			VpcId:             e.VPC.ID,
+			GroupName:         e.Name,
+			Description:       e.Description,
+			TagSpecifications: awsup.EC2TagSpecification(ec2.ResourceTypeSecurityGroup, e.Tags),
 		}
 
 		response, err := t.Cloud.EC2().CreateSecurityGroup(request)
@@ -183,10 +184,10 @@ func (_ *SecurityGroup) RenderAWS(t *awsup.AWSAPITarget, a, e, changes *Security
 }
 
 type terraformSecurityGroup struct {
-	Name        *string            `json:"name"`
-	VPCID       *terraform.Literal `json:"vpc_id"`
-	Description *string            `json:"description"`
-	Tags        map[string]string  `json:"tags,omitempty"`
+	Name        *string            `json:"name" cty:"name"`
+	VPCID       *terraform.Literal `json:"vpc_id" cty:"vpc_id"`
+	Description *string            `json:"description" cty:"description"`
+	Tags        map[string]string  `json:"tags,omitempty" cty:"tags"`
 }
 
 func (_ *SecurityGroup) RenderTerraform(t *terraform.TerraformTarget, a, e, changes *SecurityGroup) error {

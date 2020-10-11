@@ -1,5 +1,5 @@
 /*
-Copyright 2016 The Kubernetes Authors.
+Copyright 2019 The Kubernetes Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -22,14 +22,14 @@ import (
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/ec2"
 	"k8s.io/apimachinery/pkg/util/validation/field"
-	"k8s.io/klog"
+	"k8s.io/klog/v2"
 	"k8s.io/kops/upup/pkg/fi"
 	"k8s.io/kops/upup/pkg/fi/cloudup/awsup"
 	"k8s.io/kops/upup/pkg/fi/cloudup/cloudformation"
 	"k8s.io/kops/upup/pkg/fi/cloudup/terraform"
 )
 
-//go:generate fitask -type=NatGateway
+// +kops:fitask
 type NatGateway struct {
 	Name      *string
 	Lifecycle *fi.Lifecycle
@@ -272,29 +272,6 @@ func (e *NatGateway) Run(c *fi.Context) error {
 	return fi.DefaultDeltaRunMethod(e, c)
 }
 
-func (e *NatGateway) waitAvailable(cloud awsup.AWSCloud) error {
-	// It takes 'forever' (up to 5 min...) for a NatGateway to become available after it has been created
-	// We have to wait until it is actually up
-
-	// TODO: Cache availability status
-
-	id := aws.StringValue(e.ID)
-	if id == "" {
-		return fmt.Errorf("NAT Gateway %q did not have ID", aws.StringValue(e.Name))
-	}
-
-	klog.Infof("Waiting for NAT Gateway %q to be available (this often takes about 5 minutes)", id)
-	params := &ec2.DescribeNatGatewaysInput{
-		NatGatewayIds: []*string{e.ID},
-	}
-	err := cloud.EC2().WaitUntilNatGatewayAvailable(params)
-	if err != nil {
-		return fmt.Errorf("error waiting for NAT Gateway %q to be available: %v", id, err)
-	}
-
-	return nil
-}
-
 func (_ *NatGateway) RenderAWS(t *awsup.AWSAPITarget, a, e, changes *NatGateway) error {
 	// New NGW
 
@@ -307,7 +284,9 @@ func (_ *NatGateway) RenderAWS(t *awsup.AWSAPITarget, a, e, changes *NatGateway)
 
 		klog.V(2).Infof("Creating Nat Gateway")
 
-		request := &ec2.CreateNatGatewayInput{}
+		request := &ec2.CreateNatGatewayInput{
+			TagSpecifications: awsup.EC2TagSpecification(ec2.ResourceTypeNatgateway, e.Tags),
+		}
 		request.AllocationId = e.ElasticIP.ID
 		request.SubnetId = e.Subnet.ID
 		response, err := t.Cloud.EC2().CreateNatGateway(request)
@@ -360,9 +339,9 @@ func (_ *NatGateway) RenderAWS(t *awsup.AWSAPITarget, a, e, changes *NatGateway)
 }
 
 type terraformNATGateway struct {
-	AllocationID *terraform.Literal `json:"allocation_id,omitempty"`
-	SubnetID     *terraform.Literal `json:"subnet_id,omitempty"`
-	Tag          map[string]string  `json:"tags,omitempty"`
+	AllocationID *terraform.Literal `json:"allocation_id,omitempty" cty:"allocation_id"`
+	SubnetID     *terraform.Literal `json:"subnet_id,omitempty" cty:"subnet_id"`
+	Tag          map[string]string  `json:"tags,omitempty" cty:"tags"`
 }
 
 func (_ *NatGateway) RenderTerraform(t *terraform.TerraformTarget, a, e, changes *NatGateway) error {
@@ -399,7 +378,7 @@ func (e *NatGateway) TerraformLink() *terraform.Literal {
 type cloudformationNATGateway struct {
 	AllocationID *cloudformation.Literal `json:"AllocationId,omitempty"`
 	SubnetID     *cloudformation.Literal `json:"SubnetId,omitempty"`
-	Tag          map[string]string       `json:"tags,omitempty"`
+	Tags         []cloudformationTag     `json:"Tags,omitempty"`
 }
 
 func (_ *NatGateway) RenderCloudformation(t *cloudformation.CloudformationTarget, a, e, changes *NatGateway) error {
@@ -412,13 +391,13 @@ func (_ *NatGateway) RenderCloudformation(t *cloudformation.CloudformationTarget
 		return nil
 	}
 
-	tf := &cloudformationNATGateway{
+	cf := &cloudformationNATGateway{
 		AllocationID: e.ElasticIP.CloudformationAllocationID(),
 		SubnetID:     e.Subnet.CloudformationLink(),
-		Tag:          e.Tags,
+		Tags:         buildCloudformationTags(e.Tags),
 	}
 
-	return t.RenderResource("AWS::EC2::NatGateway", *e.Name, tf)
+	return t.RenderResource("AWS::EC2::NatGateway", *e.Name, cf)
 }
 
 func (e *NatGateway) CloudformationLink() *cloudformation.Literal {

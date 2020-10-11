@@ -17,41 +17,86 @@ limitations under the License.
 package kubemanifest
 
 import (
+	"bytes"
 	"fmt"
+	"strings"
 
 	"github.com/ghodss/yaml"
-	"k8s.io/klog"
+	"k8s.io/klog/v2"
 	"k8s.io/kops/util/pkg/text"
 )
 
-type Manifest struct {
+// Object holds arbitrary untyped kubernetes objects; it is used when we don't have the type definitions for them
+type Object struct {
 	data map[string]interface{}
 }
 
-func LoadManifestsFrom(contents []byte) ([]*Manifest, error) {
-	var manifests []*Manifest
+// ObjectList describes a list of objects, allowing us to add bulk-methods
+type ObjectList []*Object
 
-	// TODO: Support more separators?
+// LoadObjectsFrom parses multiple objects from a yaml file
+func LoadObjectsFrom(contents []byte) (ObjectList, error) {
+	var objects []*Object
+
 	sections := text.SplitContentToSections(contents)
 
 	for _, section := range sections {
+		// We need this so we don't error on a section that is empty / commented out
+		if !hasYAMLContent(section) {
+			continue
+		}
+
 		data := make(map[string]interface{})
 		err := yaml.Unmarshal(section, &data)
 		if err != nil {
 			return nil, fmt.Errorf("error parsing yaml: %v", err)
 		}
 
-		manifest := &Manifest{
+		obj := &Object{
 			//bytes: section,
 			data: data,
 		}
-		manifests = append(manifests, manifest)
+		objects = append(objects, obj)
 	}
 
-	return manifests, nil
+	return objects, nil
 }
 
-func (m *Manifest) ToYAML() ([]byte, error) {
+// hasYAMLContent determines if the byte slice has any content,
+// because yaml parsing gives an error if called with no content.
+// TODO: How does apimachinery avoid this problem?
+func hasYAMLContent(yamlData []byte) bool {
+	for _, line := range bytes.Split(yamlData, []byte("\n")) {
+		l := bytes.TrimSpace(line)
+		if len(l) != 0 && !bytes.HasPrefix(l, []byte("#")) {
+			return true
+		}
+	}
+	return false
+}
+
+// ToYAML serializes a list of objects back to bytes; it is the opposite of LoadObjectsFrom
+func (l ObjectList) ToYAML() ([]byte, error) {
+	var yamlSeparator = []byte("\n---\n\n")
+	var yamls [][]byte
+	for _, object := range l {
+		// Don't serialize empty objects - they confuse yaml parsers
+		if object.IsEmptyObject() {
+			continue
+		}
+
+		y, err := object.ToYAML()
+		if err != nil {
+			return nil, fmt.Errorf("error re-marshaling manifest: %v", err)
+		}
+
+		yamls = append(yamls, y)
+	}
+
+	return bytes.Join(yamls, yamlSeparator), nil
+}
+
+func (m *Object) ToYAML() ([]byte, error) {
 	b, err := yaml.Marshal(m.data)
 	if err != nil {
 		return nil, fmt.Errorf("error marshaling manifest to yaml: %v", err)
@@ -59,9 +104,95 @@ func (m *Manifest) ToYAML() ([]byte, error) {
 	return b, nil
 }
 
-func (m *Manifest) accept(visitor Visitor) error {
+func (m *Object) accept(visitor Visitor) error {
 	err := visit(visitor, m.data, []string{}, func(v interface{}) {
 		klog.Fatal("cannot mutate top-level data")
 	})
 	return err
+}
+
+// IsEmptyObject checks if the object has no keys set (i.e. `== {}`)
+func (m *Object) IsEmptyObject() bool {
+	return len(m.data) == 0
+}
+
+// Kind returns the kind field of the object, or "" if it cannot be found or is invalid
+func (m *Object) Kind() string {
+	v, found := m.data["kind"]
+	if !found {
+		return ""
+	}
+	s, ok := v.(string)
+	if !ok {
+		return ""
+	}
+	return s
+}
+
+// APIVersion returns the apiVersion field of the object, or "" if it cannot be found or is invalid
+func (m *Object) APIVersion() string {
+	v, found := m.data["apiVersion"]
+	if !found {
+		return ""
+	}
+	s, ok := v.(string)
+	if !ok {
+		return ""
+	}
+	return s
+}
+
+// Reparse parses a subfield from an object
+func (m *Object) Reparse(obj interface{}, fields ...string) error {
+	humanFields := strings.Join(fields, ".")
+
+	current := m.data
+	for _, field := range fields {
+		v, found := current[field]
+		if !found {
+			return fmt.Errorf("field %q in %s not found", field, humanFields)
+		}
+
+		m, ok := v.(map[string]interface{})
+		if !ok {
+			return fmt.Errorf("field %q in %s was not an object, was %T", field, humanFields, v)
+		}
+		current = m
+	}
+
+	b, err := yaml.Marshal(current)
+	if err != nil {
+		return fmt.Errorf("error marshaling %s to yaml: %v", humanFields, err)
+	}
+
+	if err := yaml.Unmarshal(b, obj); err != nil {
+		return fmt.Errorf("error unmarshaling subobject %s: %v", humanFields, err)
+	}
+
+	return nil
+}
+
+// Set mutates a subfield to the newValue
+func (m *Object) Set(newValue interface{}, fieldPath ...string) error {
+	humanFields := strings.Join(fieldPath, ".")
+
+	current := m.data
+	if len(fieldPath) >= 2 {
+		for _, field := range fieldPath[:len(fieldPath)-1] {
+			v, found := current[field]
+			if !found {
+				return fmt.Errorf("field %q in %s not found", field, humanFields)
+			}
+
+			m, ok := v.(map[string]interface{})
+			if !ok {
+				return fmt.Errorf("field %q in %s was not an object, was %T", field, humanFields, v)
+			}
+			current = m
+		}
+	}
+
+	current[fieldPath[len(fieldPath)-1]] = newValue
+
+	return nil
 }

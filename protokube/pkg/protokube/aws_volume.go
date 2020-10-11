@@ -1,5 +1,5 @@
 /*
-Copyright 2016 The Kubernetes Authors.
+Copyright 2019 The Kubernetes Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -30,7 +30,7 @@ import (
 	"github.com/aws/aws-sdk-go/aws/request"
 	"github.com/aws/aws-sdk-go/aws/session"
 	"github.com/aws/aws-sdk-go/service/ec2"
-	"k8s.io/klog"
+	"k8s.io/klog/v2"
 	"k8s.io/kops/protokube/pkg/etcd"
 	"k8s.io/kops/protokube/pkg/gossip"
 	gossipaws "k8s.io/kops/protokube/pkg/gossip/aws"
@@ -423,11 +423,10 @@ func (a *AWSVolumes) AttachVolume(volume *Volume) error {
 
 				volume.LocalDevice = device
 				return nil
-			} else {
-				a.releaseDevice(device, volumeID)
-
-				return fmt.Errorf("Unable to attach volume %q, was attached to %q", volumeID, v.AttachedTo)
 			}
+			a.releaseDevice(device, volumeID)
+
+			return fmt.Errorf("Unable to attach volume %q, was attached to %q", volumeID, v.AttachedTo)
 		}
 
 		switch v.Status {

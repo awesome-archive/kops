@@ -1,5 +1,5 @@
 /*
-Copyright 2016 The Kubernetes Authors.
+Copyright 2019 The Kubernetes Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -23,8 +23,7 @@ import (
 	"os"
 	"path"
 
-	"k8s.io/apimachinery/pkg/util/sets"
-	"k8s.io/klog"
+	"k8s.io/klog/v2"
 	"k8s.io/kops/upup/pkg/fi"
 	"k8s.io/kops/upup/pkg/fi/utils"
 )
@@ -32,7 +31,6 @@ import (
 type CloudInitTarget struct {
 	Config *CloudConfig
 	out    io.Writer
-	Tags   sets.String
 }
 
 type AddBehaviour int
@@ -42,11 +40,10 @@ const (
 	Once
 )
 
-func NewCloudInitTarget(out io.Writer, tags sets.String) *CloudInitTarget {
+func NewCloudInitTarget(out io.Writer) *CloudInitTarget {
 	t := &CloudInitTarget{
 		Config: &CloudConfig{},
 		out:    out,
-		Tags:   tags,
 	}
 	return t
 }
@@ -67,11 +64,6 @@ type CloudConfigFile struct {
 	Path        string `json:"path,omitempty"`
 	Permissions string `json:"permissions,omitempty"`
 	Content     string `json:"content,omitempty"`
-}
-
-func (t *CloudInitTarget) HasTag(tag string) bool {
-	_, found := t.Tags[tag]
-	return found
 }
 
 func (t *CloudInitTarget) ProcessDeletions() bool {
@@ -168,7 +160,6 @@ func (t *CloudInitTarget) AddCommand(addBehaviour AddBehaviour, args ...string) 
 				return
 			}
 		}
-		break
 
 	default:
 		klog.Fatalf("unknown AddBehaviour: %v", addBehaviour)

@@ -19,13 +19,13 @@ package assettasks
 import (
 	"fmt"
 
-	"k8s.io/klog"
+	"k8s.io/klog/v2"
 	"k8s.io/kops/upup/pkg/fi"
 )
 
 // CopyDockerImage copies a docker image from a source registry, to a target registry,
 // typically used for highly secure clusters.
-//go:generate fitask -type=CopyDockerImage
+// +kops:fitask
 type CopyDockerImage struct {
 	Name        *string
 	SourceImage *string

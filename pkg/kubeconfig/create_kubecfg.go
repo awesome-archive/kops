@@ -1,5 +1,5 @@
 /*
-Copyright 2016 The Kubernetes Authors.
+Copyright 2019 The Kubernetes Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -17,22 +17,37 @@ limitations under the License.
 package kubeconfig
 
 import (
+	"crypto/x509/pkix"
 	"fmt"
+	"os/user"
 	"sort"
+	"time"
 
-	"k8s.io/client-go/tools/clientcmd"
-	"k8s.io/klog"
+	"k8s.io/klog/v2"
 	"k8s.io/kops/pkg/apis/kops"
+	"k8s.io/kops/pkg/apis/kops/util"
 	"k8s.io/kops/pkg/dns"
+	"k8s.io/kops/pkg/pki"
+	"k8s.io/kops/pkg/rbac"
 	"k8s.io/kops/upup/pkg/fi"
 )
 
-func BuildKubecfg(cluster *kops.Cluster, keyStore fi.Keystore, secretStore fi.SecretStore, status kops.StatusStore, configAccess clientcmd.ConfigAccess) (*KubeconfigBuilder, error) {
+const DefaultKubecfgAdminLifetime = 18 * time.Hour
+
+func BuildKubecfg(cluster *kops.Cluster, keyStore fi.Keystore, secretStore fi.SecretStore, status kops.StatusStore, admin time.Duration, configUser string, internal bool, kopsStateStore string, useKopsAuthenticationPlugin bool) (*KubeconfigBuilder, error) {
 	clusterName := cluster.ObjectMeta.Name
 
-	master := cluster.Spec.MasterPublicName
-	if master == "" {
-		master = "api." + clusterName
+	var master string
+	if internal {
+		master = cluster.Spec.MasterInternalName
+		if master == "" {
+			master = "api.internal." + clusterName
+		}
+	} else {
+		master = cluster.Spec.MasterPublicName
+		if master == "" {
+			master = "api." + clusterName
+		}
 	}
 
 	server := "https://" + master
@@ -82,13 +97,14 @@ func BuildKubecfg(cluster *kops.Cluster, keyStore fi.Keystore, secretStore fi.Se
 		}
 	}
 
-	b := NewKubeconfigBuilder(configAccess)
+	b := NewKubeconfigBuilder()
 
 	b.Context = clusterName
+	b.Server = server
 
-	// add the CA Cert to the kubeconfig only if we didn't specify a SSL cert for the LB
-	if cluster.Spec.API == nil || cluster.Spec.API.LoadBalancer == nil || cluster.Spec.API.LoadBalancer.SSLCertificate == "" {
-		cert, _, _, err := keyStore.FindKeypair(fi.CertificateId_CA)
+	// add the CA Cert to the kubeconfig only if we didn't specify a SSL cert for the LB or are targeting the internal DNS name
+	if cluster.Spec.API == nil || cluster.Spec.API.LoadBalancer == nil || cluster.Spec.API.LoadBalancer.SSLCertificate == "" || internal {
+		cert, _, _, err := keyStore.FindKeypair(fi.CertificateIDCA)
 		if err != nil {
 			return nil, fmt.Errorf("error fetching CA keypair: %v", err)
 		}
@@ -102,32 +118,68 @@ func BuildKubecfg(cluster *kops.Cluster, keyStore fi.Keystore, secretStore fi.Se
 		}
 	}
 
-	{
-		cert, key, _, err := keyStore.FindKeypair("kubecfg")
+	if admin != 0 {
+		cn := "kubecfg"
+		user, err := user.Current()
+		if err != nil || user == nil {
+			klog.Infof("unable to get user: %v", err)
+		} else {
+			cn += "-" + user.Name
+		}
+
+		req := pki.IssueCertRequest{
+			Signer: fi.CertificateIDCA,
+			Type:   "client",
+			Subject: pkix.Name{
+				CommonName:   cn,
+				Organization: []string{rbac.SystemPrivilegedGroup},
+			},
+			Validity: admin,
+		}
+		cert, privateKey, _, err := pki.IssueCert(&req, keyStore)
 		if err != nil {
-			return nil, fmt.Errorf("error fetching kubecfg keypair: %v", err)
+			return nil, err
 		}
-		if cert != nil {
-			b.ClientCert, err = cert.AsBytes()
-			if err != nil {
-				return nil, err
-			}
-		} else {
-			return nil, fmt.Errorf("cannot find kubecfg certificate")
+		b.ClientCert, err = cert.AsBytes()
+		if err != nil {
+			return nil, err
 		}
-		if key != nil {
-			b.ClientKey, err = key.AsBytes()
-			if err != nil {
-				return nil, err
-			}
-		} else {
-			return nil, fmt.Errorf("cannot find kubecfg key")
+		b.ClientKey, err = privateKey.AsBytes()
+		if err != nil {
+			return nil, err
+		}
+	}
+
+	if useKopsAuthenticationPlugin {
+		b.AuthenticationExec = []string{
+			"kops",
+			"helpers",
+			"kubectl-auth",
+			"--cluster=" + clusterName,
+			"--state=" + kopsStateStore,
 		}
 	}
 
 	b.Server = server
 
-	if secretStore != nil {
+	k8sVersion, err := util.ParseKubernetesVersion(cluster.Spec.KubernetesVersion)
+	if err != nil || k8sVersion == nil {
+		klog.Warningf("unable to parse KubernetesVersion %q", cluster.Spec.KubernetesVersion)
+		k8sVersion, _ = util.ParseKubernetesVersion("1.0.0")
+	}
+
+	basicAuthEnabled := false
+	if !util.IsKubernetesGTE("1.18", *k8sVersion) {
+		if cluster.Spec.KubeAPIServer == nil || cluster.Spec.KubeAPIServer.DisableBasicAuth == nil || !*cluster.Spec.KubeAPIServer.DisableBasicAuth {
+			basicAuthEnabled = true
+		}
+	} else if !util.IsKubernetesGTE("1.19", *k8sVersion) {
+		if cluster.Spec.KubeAPIServer != nil && cluster.Spec.KubeAPIServer.DisableBasicAuth != nil && !*cluster.Spec.KubeAPIServer.DisableBasicAuth {
+			basicAuthEnabled = true
+		}
+	}
+
+	if basicAuthEnabled && secretStore != nil {
 		secret, err := secretStore.FindSecret("kube")
 		if err != nil {
 			return nil, err
@@ -136,6 +188,12 @@ func BuildKubecfg(cluster *kops.Cluster, keyStore fi.Keystore, secretStore fi.Se
 			b.KubeUser = "admin"
 			b.KubePassword = string(secret.Data)
 		}
+	}
+
+	if configUser == "" {
+		b.User = cluster.ObjectMeta.Name
+	} else {
+		b.User = configUser
 	}
 
 	return b, nil

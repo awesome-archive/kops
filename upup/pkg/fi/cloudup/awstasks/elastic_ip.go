@@ -1,5 +1,5 @@
 /*
-Copyright 2016 The Kubernetes Authors.
+Copyright 2019 The Kubernetes Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -21,7 +21,7 @@ import (
 
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/ec2"
-	"k8s.io/klog"
+	"k8s.io/klog/v2"
 
 	"k8s.io/kops/upup/pkg/fi"
 	"k8s.io/kops/upup/pkg/fi/cloudup/awsup"
@@ -29,9 +29,8 @@ import (
 	"k8s.io/kops/upup/pkg/fi/cloudup/terraform"
 )
 
-//go:generate fitask -type=ElasticIP
-
 // ElasticIP manages an AWS Address (ElasticIP)
+// +kops:fitask
 type ElasticIP struct {
 	Name      *string
 	Lifecycle *fi.Lifecycle
@@ -54,19 +53,6 @@ var _ fi.CompareWithID = &ElasticIP{}
 
 func (e *ElasticIP) CompareWithID() *string {
 	return e.ID
-}
-
-var _ fi.HasAddress = &ElasticIP{}
-
-func (e *ElasticIP) FindIPAddress(context *fi.Context) (*string, error) {
-	actual, err := e.find(context.Cloud.(awsup.AWSCloud))
-	if err != nil {
-		return nil, fmt.Errorf("error querying for ElasticIP: %v", err)
-	}
-	if actual == nil {
-		return nil, nil
-	}
-	return actual.PublicIP, nil
 }
 
 // Find returns the actual ElasticIP state, or nil if not found
@@ -209,6 +195,7 @@ func (_ *ElasticIP) CheckChanges(a, e, changes *ElasticIP) error {
 	// This is a new EIP
 	if a == nil {
 		// No logic for EIPs - they are just created
+		return nil
 	}
 
 	// This is an existing EIP
@@ -279,8 +266,8 @@ func (_ *ElasticIP) RenderAWS(t *awsup.AWSAPITarget, a, e, changes *ElasticIP) e
 }
 
 type terraformElasticIP struct {
-	VPC  *bool             `json:"vpc"`
-	Tags map[string]string `json:"tags,omitempty"`
+	VPC  *bool             `json:"vpc" cty:"vpc"`
+	Tags map[string]string `json:"tags,omitempty" cty:"tags"`
 }
 
 func (_ *ElasticIP) RenderTerraform(t *terraform.TerraformTarget, a, e, changes *ElasticIP) error {

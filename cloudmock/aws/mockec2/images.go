@@ -1,5 +1,5 @@
 /*
-Copyright 2016 The Kubernetes Authors.
+Copyright 2019 The Kubernetes Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -23,7 +23,7 @@ import (
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/aws/request"
 	"github.com/aws/aws-sdk-go/service/ec2"
-	"k8s.io/klog"
+	"k8s.io/klog/v2"
 )
 
 func (m *MockEC2) DescribeImageAttributeRequest(*ec2.DescribeImageAttributeInput) (*request.Request, *ec2.DescribeImageAttributeOutput) {
@@ -43,6 +43,9 @@ func (m *MockEC2) DescribeImagesWithContext(aws.Context, *ec2.DescribeImagesInpu
 }
 
 func (m *MockEC2) DescribeImages(request *ec2.DescribeImagesInput) (*ec2.DescribeImagesOutput, error) {
+	m.mutex.Lock()
+	defer m.mutex.Unlock()
+
 	klog.Infof("DescribeImages: %v", request)
 
 	var images []*ec2.Image

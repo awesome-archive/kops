@@ -1,5 +1,5 @@
 /*
-Copyright 2018 The Kubernetes Authors.
+Copyright 2019 The Kubernetes Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -24,10 +24,11 @@ import (
 	"k8s.io/kops/upup/pkg/fi/cloudup/awsup"
 
 	"github.com/aws/aws-sdk-go/aws"
-	"k8s.io/klog"
+	"k8s.io/klog/v2"
 )
 
-// LaunchTemplate defines the specificate for a template
+// LaunchTemplate defines the specification for a launch template.
+// +kops:fitask
 type LaunchTemplate struct {
 	// Name is the name of the configuration
 	Name *string
@@ -56,16 +57,25 @@ type LaunchTemplate struct {
 	RootVolumeSize *int64
 	// RootVolumeType is the type of the EBS root volume to use (e.g. gp2)
 	RootVolumeType *string
+	// RootVolumeEncryption enables EBS root volume encryption for an instance
+	RootVolumeEncryption *bool
 	// SSHKey is the ssh key for the instances
 	SSHKey *SSHKey
 	// SecurityGroups is a list of security group associated
 	SecurityGroups []*SecurityGroup
 	// SpotPrice is set to the spot-price bid if this is a spot pricing request
 	SpotPrice string
+	// SpotDurationInMinutes is set for requesting spot blocks
+	SpotDurationInMinutes *int64
+	// Tags are the keypairs to apply to the instance and volume on launch as well as the launch template itself.
+	Tags map[string]string
 	// Tenancy. Can be either default or dedicated.
 	Tenancy *string
 	// UserData is the user data configuration
 	UserData *fi.ResourceHolder
+	// InstanceInterruptionBehavior defines if a spot instance should be terminated, hibernated,
+	// or stopped after interruption
+	InstanceInterruptionBehavior *string
 }
 
 var (
@@ -105,6 +115,7 @@ func (t *LaunchTemplate) buildRootDevice(cloud awsup.AWSCloud) (map[string]*Bloc
 		EbsVolumeSize:          t.RootVolumeSize,
 		EbsVolumeType:          t.RootVolumeType,
 		EbsVolumeIops:          t.RootVolumeIops,
+		EbsEncrypted:           t.RootVolumeEncryption,
 	}
 
 	return bm, nil

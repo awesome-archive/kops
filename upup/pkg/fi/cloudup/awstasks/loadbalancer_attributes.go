@@ -1,5 +1,5 @@
 /*
-Copyright 2016 The Kubernetes Authors.
+Copyright 2019 The Kubernetes Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -21,7 +21,7 @@ import (
 
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/elb"
-	"k8s.io/klog"
+	"k8s.io/klog/v2"
 	"k8s.io/kops/upup/pkg/fi"
 	"k8s.io/kops/upup/pkg/fi/cloudup/awsup"
 )
@@ -38,10 +38,10 @@ func (_ *LoadBalancerAccessLog) GetDependencies(tasks map[string]fi.Task) []fi.T
 }
 
 type terraformLoadBalancerAccessLog struct {
-	EmitInterval   *int64  `json:"interval,omitempty"`
-	Enabled        *bool   `json:"enabled,omitempty"`
-	S3BucketName   *string `json:"bucket,omitempty"`
-	S3BucketPrefix *string `json:"bucket_prefix,omitempty"`
+	EmitInterval   *int64  `json:"interval,omitempty" cty:"interval"`
+	Enabled        *bool   `json:"enabled,omitempty" cty:"enabled"`
+	S3BucketName   *string `json:"bucket,omitempty" cty:"bucket"`
+	S3BucketPrefix *string `json:"bucket_prefix,omitempty" cty:"bucket_prefix"`
 }
 
 type cloudformationLoadBalancerAccessLog struct {
@@ -135,6 +135,8 @@ func (_ *LoadBalancer) modifyLoadBalancerAttributes(t *awsup.AWSAPITarget, a, e,
 	request.LoadBalancerAttributes.CrossZoneLoadBalancing = &elb.CrossZoneLoadBalancing{}
 	if e.CrossZoneLoadBalancing == nil || e.CrossZoneLoadBalancing.Enabled == nil {
 		request.LoadBalancerAttributes.CrossZoneLoadBalancing.Enabled = fi.Bool(false)
+	} else {
+		request.LoadBalancerAttributes.CrossZoneLoadBalancing.Enabled = e.CrossZoneLoadBalancing.Enabled
 	}
 
 	// Setting non mandatory values only if not empty

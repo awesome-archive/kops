@@ -7,15 +7,16 @@ kops is Kubernetes ops.
 
 ### Synopsis
 
-kops is Kubernetes ops. 
+kops is Kubernetes ops.
 
-kops is the easiest way to get a production grade Kubernetes cluster up and running. We like to think of it as kubectl for clusters. 
+ kops is the easiest way to get a production grade Kubernetes cluster up and running. We like to think of it as kubectl for clusters.
 
-kops helps you create, destroy, upgrade and maintain production-grade, highly available, Kubernetes clusters from the command line.  AWS (Amazon Web Services) is currently officially supported, with GCE and VMware vSphere in alpha support.
+ kops helps you create, destroy, upgrade and maintain production-grade, highly available, Kubernetes clusters from the command line. AWS (Amazon Web Services) is currently officially supported, with GCE and OpenStack in beta support.
 
 ### Options
 
 ```
+      --add_dir_header                   If true, adds the file directory to the header of the log messages
       --alsologtostderr                  log to standard error as well as files
       --config string                    yaml config file (default is $HOME/.kops.yaml)
   -h, --help                             help for kops
@@ -26,7 +27,7 @@ kops helps you create, destroy, upgrade and maintain production-grade, highly av
       --logtostderr                      log to standard error instead of files (default true)
       --name string                      Name of cluster. Overrides KOPS_CLUSTER_NAME environment variable
       --skip_headers                     If true, avoid header prefixes in the log messages
-      --skip_log_headers                 If true, avoid headers when openning log files
+      --skip_log_headers                 If true, avoid headers when opening log files
       --state string                     Location of state storage (kops 'config' file). Overrides KOPS_STATE_STORE environment variable
       --stderrthreshold severity         logs at or above this threshold go to stderr (default 2)
   -v, --v Level                          number for the log level verbosity
@@ -37,7 +38,7 @@ kops helps you create, destroy, upgrade and maintain production-grade, highly av
 
 * [kops completion](kops_completion.md)	 - Output shell completion code for the given shell (bash or zsh).
 * [kops create](kops_create.md)	 - Create a resource by command line, filename or stdin.
-* [kops delete](kops_delete.md)	 - Delete clusters,instancegroups, or secrets.
+* [kops delete](kops_delete.md)	 - Delete clusters,instancegroups, instances, or secrets.
 * [kops describe](kops_describe.md)	 - Describe a resource.
 * [kops edit](kops_edit.md)	 - Edit clusters and other resources.
 * [kops export](kops_export.md)	 - Export configuration.

@@ -1,5 +1,5 @@
 /*
-Copyright 2018 The Kubernetes Authors.
+Copyright 2019 The Kubernetes Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -19,7 +19,6 @@ package testutils
 import (
 	"fmt"
 	"io/ioutil"
-	"os"
 	"path"
 	"sort"
 	"strings"
@@ -28,8 +27,8 @@ import (
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/kops/pkg/apis/kops"
 	"k8s.io/kops/pkg/apis/kops/v1alpha2"
-	"k8s.io/kops/pkg/diff"
 	"k8s.io/kops/pkg/kopscodecs"
+	"k8s.io/kops/pkg/testutils/golden"
 	"k8s.io/kops/upup/pkg/fi"
 	"k8s.io/kops/util/pkg/text"
 )
@@ -70,14 +69,14 @@ func LoadModel(basedir string) (*Model, error) {
 			spec.InstanceGroups = append(spec.InstanceGroups, v)
 
 		default:
-			return nil, fmt.Errorf("Unhandled kind %q", gvk)
+			return nil, fmt.Errorf("unhandled kind %q", gvk)
 		}
 	}
 
 	return spec, nil
 }
 
-func ValidateTasks(t *testing.T, basedir string, context *fi.ModelBuilderContext) {
+func ValidateTasks(t *testing.T, expectedFile string, context *fi.ModelBuilderContext) {
 	var keys []string
 	for key := range context.Tasks {
 		keys = append(keys, key)
@@ -95,27 +94,10 @@ func ValidateTasks(t *testing.T, basedir string, context *fi.ModelBuilderContext
 	}
 
 	actualTasksYaml := strings.Join(yamls, "\n---\n")
-
-	tasksYamlPath := path.Join(basedir, "tasks.yaml")
-	expectedTasksYamlBytes, err := ioutil.ReadFile(tasksYamlPath)
-	if err != nil {
-		t.Fatalf("error reading file %q: %v", tasksYamlPath, err)
-	}
-
 	actualTasksYaml = strings.TrimSpace(actualTasksYaml)
-	expectedTasksYaml := strings.TrimSpace(string(expectedTasksYamlBytes))
 
-	if expectedTasksYaml != actualTasksYaml {
-		if os.Getenv("HACK_UPDATE_EXPECTED_IN_PLACE") != "" {
-			t.Logf("HACK_UPDATE_EXPECTED_IN_PLACE: writing expected output %s", tasksYamlPath)
-			if err := ioutil.WriteFile(tasksYamlPath, []byte(actualTasksYaml), 0644); err != nil {
-				t.Errorf("error writing expected output %s: %v", tasksYamlPath, err)
-			}
-		}
+	golden.AssertMatchesFile(t, actualTasksYaml, expectedFile)
 
-		diffString := diff.FormatDiff(expectedTasksYaml, actualTasksYaml)
-		t.Logf("diff:\n%s\n", diffString)
-
-		t.Fatalf("tasks differed from expected for test %q", basedir)
-	}
+	// Asserts that FindTaskDependencies doesn't call klog.Fatalf()
+	fi.FindTaskDependencies(context.Tasks)
 }

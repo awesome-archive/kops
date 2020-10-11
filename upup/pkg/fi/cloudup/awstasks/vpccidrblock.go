@@ -1,5 +1,5 @@
 /*
-Copyright 2016 The Kubernetes Authors.
+Copyright 2019 The Kubernetes Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -26,7 +26,7 @@ import (
 	"k8s.io/kops/upup/pkg/fi/cloudup/terraform"
 )
 
-//go:generate fitask -type=VPCCIDRBlock
+// +kops:fitask
 type VPCCIDRBlock struct {
 	Name      *string
 	Lifecycle *fi.Lifecycle
@@ -48,10 +48,22 @@ func (e *VPCCIDRBlock) Find(c *fi.Context) (*VPCCIDRBlock, error) {
 		return nil, err
 	}
 
+	found := false
+	for _, cba := range vpc.CidrBlockAssociationSet {
+		if fi.StringValue(cba.CidrBlock) == fi.StringValue(e.CIDRBlock) &&
+			cba.CidrBlockState != nil && fi.StringValue(cba.CidrBlockState.State) == ec2.VpcCidrBlockStateCodeAssociated {
+			found = true
+			break
+		}
+	}
+	if !found {
+		return nil, nil
+	}
+
 	actual := &VPCCIDRBlock{
 		CIDRBlock: e.CIDRBlock,
+		VPC:       &VPC{ID: vpc.VpcId},
 	}
-	actual.VPC = &VPC{ID: vpc.VpcId}
 
 	// Prevent spurious changes
 	actual.Shared = e.Shared
@@ -112,8 +124,8 @@ func (_ *VPCCIDRBlock) RenderAWS(t *awsup.AWSAPITarget, a, e, changes *VPCCIDRBl
 }
 
 type terraformVPCCIDRBlock struct {
-	VPCID     *terraform.Literal `json:"vpc_id"`
-	CIDRBlock *string            `json:"cidr_block"`
+	VPCID     *terraform.Literal `json:"vpc_id" cty:"vpc_id"`
+	CIDRBlock *string            `json:"cidr_block" cty:"cidr_block"`
 }
 
 func (_ *VPCCIDRBlock) RenderTerraform(t *terraform.TerraformTarget, a, e, changes *VPCCIDRBlock) error {
@@ -124,7 +136,10 @@ func (_ *VPCCIDRBlock) RenderTerraform(t *terraform.TerraformTarget, a, e, chang
 		CIDRBlock: e.CIDRBlock,
 	}
 
-	return t.RenderResource("aws_vpc_ipv4_cidr_block_association", *e.Name, tf)
+	// Terraform 0.12 doesn't support resource names that start with digits. See #7052
+	// and https://www.terraform.io/upgrade-guides/0-12.html#pre-upgrade-checklist
+	name := fmt.Sprintf("cidr-%v", *e.Name)
+	return t.RenderResource("aws_vpc_ipv4_cidr_block_association", name, tf)
 }
 
 type cloudformationVPCCIDRBlock struct {

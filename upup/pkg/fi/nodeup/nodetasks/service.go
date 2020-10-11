@@ -1,5 +1,5 @@
 /*
-Copyright 2016 The Kubernetes Authors.
+Copyright 2019 The Kubernetes Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -17,7 +17,6 @@ limitations under the License.
 package nodetasks
 
 import (
-	"encoding/json"
 	"fmt"
 	"io/ioutil"
 	"os"
@@ -26,11 +25,11 @@ import (
 	"strings"
 	"time"
 
-	"k8s.io/klog"
+	"k8s.io/klog/v2"
 	"k8s.io/kops/upup/pkg/fi"
 	"k8s.io/kops/upup/pkg/fi/nodeup/cloudinit"
 	"k8s.io/kops/upup/pkg/fi/nodeup/local"
-	"k8s.io/kops/upup/pkg/fi/nodeup/tags"
+	"k8s.io/kops/util/pkg/distributions"
 )
 
 const (
@@ -41,9 +40,14 @@ const (
 	// package (protokube, kubelet).  Maybe we should have the idea of a "system" package.
 	centosSystemdSystemPath = "/usr/lib/systemd/system"
 
-	coreosSystemdSystemPath = "/etc/systemd/system"
+	flatcarSystemdSystemPath = "/etc/systemd/system"
 
 	containerosSystemdSystemPath = "/etc/systemd/system"
+
+	containerdService = "containerd.service"
+	dockerService     = "docker.service"
+	kubeletService    = "kubelet.service"
+	protokubeService  = "protokube.service"
 )
 
 type Service struct {
@@ -65,14 +69,24 @@ func (p *Service) GetDependencies(tasks map[string]fi.Task) []fi.Task {
 	var deps []fi.Task
 	for _, v := range tasks {
 		// We assume that services depend on everything except for
-		// LoadImageTask. If there are any LoadImageTasks (e.g. we're
+		// LoadImageTask or IssueCert. If there are any LoadImageTasks (e.g. we're
 		// launching a custom Kubernetes build), they all depend on
 		// the "docker.service" Service task.
-		switch v.(type) {
-		case *File, *Package, *UpdatePackages, *UserTask, *GroupTask, *MountDiskTask, *Chattr:
+		switch v := v.(type) {
+		case *Package, *UpdatePackages, *UserTask, *GroupTask, *Chattr, *BindMount, *Archive:
 			deps = append(deps, v)
-		case *Service, *LoadImageTask:
+		case *Service, *LoadImageTask, *IssueCert, *BootstrapClient, *KubeConfig:
 			// ignore
+		case *File:
+			if len(v.BeforeServices) > 0 {
+				for _, s := range v.BeforeServices {
+					if p.Name == s {
+						deps = append(deps, v)
+					}
+				}
+			} else {
+				deps = append(deps, v)
+			}
 		default:
 			klog.Warningf("Unhandled type %T in Service::GetDependencies: %v", v, v)
 			deps = append(deps, v)
@@ -85,23 +99,7 @@ func (s *Service) String() string {
 	return fmt.Sprintf("Service: %s", s.Name)
 }
 
-func NewService(name string, contents string, meta string) (fi.Task, error) {
-	s := &Service{Name: name}
-	s.Definition = fi.String(contents)
-
-	if meta != "" {
-		err := json.Unmarshal([]byte(meta), s)
-		if err != nil {
-			return nil, fmt.Errorf("error parsing json for service %q: %v", name, err)
-		}
-	}
-
-	s.InitDefaults()
-
-	return s, nil
-}
-
-func (s *Service) InitDefaults() {
+func (s *Service) InitDefaults() *Service {
 	// Default some values to true: Running, SmartRestart, ManageState
 	if s.Running == nil {
 		s.Running = fi.Bool(true)
@@ -117,6 +115,8 @@ func (s *Service) InitDefaults() {
 	if s.Enabled == nil {
 		s.Enabled = s.Running
 	}
+
+	return s
 }
 
 func getSystemdStatus(name string) (map[string]string, error) {
@@ -141,14 +141,19 @@ func getSystemdStatus(name string) (map[string]string, error) {
 	return properties, nil
 }
 
-func (e *Service) systemdSystemPath(target tags.HasTags) (string, error) {
-	if target.HasTag(tags.TagOSFamilyDebian) {
+func (e *Service) systemdSystemPath() (string, error) {
+	d, err := distributions.FindDistribution("/")
+	if err != nil {
+		return "", fmt.Errorf("unknown or unsupported distro: %v", err)
+	}
+
+	if d.IsDebianFamily() {
 		return debianSystemdSystemPath, nil
-	} else if target.HasTag(tags.TagOSFamilyRHEL) {
+	} else if d.IsRHELFamily() {
 		return centosSystemdSystemPath, nil
-	} else if target.HasTag("_coreos") {
-		return coreosSystemdSystemPath, nil
-	} else if target.HasTag("_containeros") {
+	} else if d == distributions.DistributionFlatcar {
+		return flatcarSystemdSystemPath, nil
+	} else if d == distributions.DistributionContainerOS {
 		return containerosSystemdSystemPath, nil
 	} else {
 		return "", fmt.Errorf("unsupported systemd system")
@@ -156,7 +161,7 @@ func (e *Service) systemdSystemPath(target tags.HasTags) (string, error) {
 }
 
 func (e *Service) Find(c *fi.Context) (*Service, error) {
-	systemdSystemPath, err := e.systemdSystemPath(c.Target.(tags.HasTags))
+	systemdSystemPath, err := e.systemdSystemPath()
 	if err != nil {
 		return nil, err
 	}
@@ -254,7 +259,7 @@ func (s *Service) CheckChanges(a, e, changes *Service) error {
 }
 
 func (_ *Service) RenderLocal(t *local.LocalTarget, a, e, changes *Service) error {
-	systemdSystemPath, err := e.systemdSystemPath(t)
+	systemdSystemPath, err := e.systemdSystemPath()
 	if err != nil {
 		return err
 	}
@@ -370,7 +375,7 @@ func (_ *Service) RenderLocal(t *local.LocalTarget, a, e, changes *Service) erro
 }
 
 func (_ *Service) RenderCloudInit(t *cloudinit.CloudInitTarget, a, e, changes *Service) error {
-	systemdSystemPath, err := e.systemdSystemPath(t)
+	systemdSystemPath, err := e.systemdSystemPath()
 	if err != nil {
 		return err
 	}
@@ -395,8 +400,4 @@ var _ fi.HasName = &Service{}
 
 func (f *Service) GetName() *string {
 	return &f.Name
-}
-
-func (f *Service) SetName(name string) {
-	klog.Fatalf("SetName not supported for Service task")
 }

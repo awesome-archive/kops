@@ -19,7 +19,7 @@ package alitasks
 import (
 	"fmt"
 
-	"k8s.io/klog"
+	"k8s.io/klog/v2"
 
 	"github.com/denverdino/aliyungo/common"
 	"github.com/denverdino/aliyungo/ecs"
@@ -28,7 +28,7 @@ import (
 	"k8s.io/kops/upup/pkg/fi/cloudup/terraform"
 )
 
-//go:generate fitask -type=VSwitchSNAT
+// +kops:fitask
 type VSwitchSNAT struct {
 	Name      *string
 	Lifecycle *fi.Lifecycle
@@ -57,8 +57,8 @@ func (v *VSwitchSNAT) Find(c *fi.Context) (*VSwitchSNAT, error) {
 		klog.V(4).Infof("NatGateway / NatGatewayId not found for %s, skipping Find", fi.StringValue(v.Name))
 		return nil, nil
 	}
-	if v.EIP == nil || v.EIP.IpAddress == nil {
-		klog.V(4).Infof("EIP / EIP not found for %s, skipping Find", fi.StringValue(v.Name))
+	if v.EIP == nil || v.EIP.Name == nil {
+		klog.V(4).Infof("EIP / EIPName not found for %s, skipping Find", fi.StringValue(v.Name))
 		return nil, nil
 	}
 
@@ -108,6 +108,28 @@ func (v *VSwitchSNAT) Find(c *fi.Context) (*VSwitchSNAT, error) {
 				actual.Shared = v.Shared
 				actual.Name = v.Name
 				actual.Lifecycle = v.Lifecycle
+
+				describeEIPArgs := &ecs.DescribeEipAddressesArgs{
+					RegionId:   common.Region(cloud.Region()),
+					EipAddress: snatEntry.SnatIp,
+				}
+
+				eips, _, err := cloud.VpcClient().DescribeEipAddresses(describeEIPArgs)
+				if err != nil {
+					return nil, fmt.Errorf("error listing EIP: %v", err)
+				}
+
+				if len(eips) == 0 {
+					klog.V(4).Infof("EIP not found for %s, skipping Find", snatEntry.SnatIp)
+					return nil, nil
+				}
+
+				eip := eips[0]
+
+				actual.EIP = &EIP{
+					ID:        &eip.AllocationId,
+					IpAddress: &eip.IpAddress,
+				}
 
 				return actual, nil
 			}
@@ -161,8 +183,8 @@ func (_ *VSwitchSNAT) RenderALI(t *aliup.ALIAPITarget, a, e, changes *VSwitchSNA
 }
 
 type terraformVSwitchSNAT struct {
-	SnatTableId *string            `json:"snat_table_id,omitempty"`
-	VSwitchId   *terraform.Literal `json:"source_vswitch_id,omitempty"`
+	SnatTableId *string            `json:"snat_table_id,omitempty" cty:"snat_table_id"`
+	VSwitchId   *terraform.Literal `json:"source_vswitch_id,omitempty" cty:"source_vswitch_id"`
 }
 
 func (_ *VSwitchSNAT) RenderTerraform(t *terraform.TerraformTarget, a, e, changes *VSwitchSNAT) error {

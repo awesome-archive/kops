@@ -1,5 +1,5 @@
 /*
-Copyright 2016 The Kubernetes Authors.
+Copyright 2019 The Kubernetes Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -18,7 +18,7 @@ package awsup
 
 import (
 	"github.com/aws/aws-sdk-go/aws/request"
-	"k8s.io/klog"
+	"k8s.io/klog/v2"
 )
 
 // RequestLogger logs every AWS request

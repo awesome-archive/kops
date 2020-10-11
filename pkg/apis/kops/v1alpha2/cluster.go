@@ -1,5 +1,5 @@
 /*
-Copyright 2016 The Kubernetes Authors.
+Copyright 2019 The Kubernetes Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -19,6 +19,7 @@ package v1alpha2
 import (
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/util/intstr"
 )
 
 // +genclient
@@ -54,6 +55,10 @@ type ClusterSpec struct {
 	ConfigBase string `json:"configBase,omitempty"`
 	// The CloudProvider to use (aws or gce)
 	CloudProvider string `json:"cloudProvider,omitempty"`
+	// GossipConfig for the cluster assuming the use of gossip DNS
+	GossipConfig *GossipConfig `json:"gossipConfig,omitempty"`
+	// Container runtime to use for Kubernetes
+	ContainerRuntime string `json:"containerRuntime,omitempty"`
 	// The version of kubernetes to install (optional, and can be a "spec" like stable)
 	KubernetesVersion string `json:"kubernetesVersion,omitempty"`
 	// Configuration of subnets we are targeting
@@ -91,12 +96,16 @@ type ClusterSpec struct {
 	// Note that DNSZone can either by the host name of the zone (containing dots),
 	// or can be an identifier for the zone.
 	DNSZone string `json:"dnsZone,omitempty"`
+	// DNSControllerGossipConfig for the cluster assuming the use of gossip DNS
+	DNSControllerGossipConfig *DNSControllerGossipConfig `json:"dnsControllerGossipConfig,omitempty"`
 	// AdditionalSANs adds additional Subject Alternate Names to apiserver cert that kops generates
 	AdditionalSANs []string `json:"additionalSans,omitempty"`
 	// ClusterDNSDomain is the suffix we use for internal DNS names (normally cluster.local)
 	ClusterDNSDomain string `json:"clusterDNSDomain,omitempty"`
 	// ServiceClusterIPRange is the CIDR, from the internal network, where we allocate IPs for services
 	ServiceClusterIPRange string `json:"serviceClusterIPRange,omitempty"`
+	// PodCIDR is the CIDR from which we allocate IPs for pods
+	PodCIDR string `json:"podCIDR,omitempty"`
 	//MasterIPRange                 string `json:",omitempty"`
 	// NonMasqueradeCIDR is the CIDR for the internal k8s network (on which pods & services live)
 	// It cannot overlap ServiceClusterIPRange
@@ -109,7 +118,7 @@ type ClusterSpec struct {
 	// HTTPProxy defines connection information to support use of a private cluster behind an forward HTTP Proxy
 	EgressProxy *EgressProxySpec `json:"egressProxy,omitempty"`
 	// SSHKeyName specifies a preexisting SSH key to use
-	SSHKeyName string `json:"sshKeyName,omitempty"`
+	SSHKeyName *string `json:"sshKeyName,omitempty"`
 	// KubernetesAPIAccess determines the permitted access to the API endpoints (master HTTPS)
 	// Currently only a single CIDR is supported (though a richer grammar could be added in future)
 	KubernetesAPIAccess []string `json:"kubernetesApiAccess,omitempty"`
@@ -126,14 +135,16 @@ type ClusterSpec struct {
 	//   'external' do not apply updates automatically - they are applied manually or by an external system
 	//   missing: default policy (currently OS security upgrades that do not require a reboot)
 	UpdatePolicy *string `json:"updatePolicy,omitempty"`
+	// ExternalPolicies allows the insertion of pre-existing managed policies on IG Roles
+	ExternalPolicies *map[string][]string `json:"externalPolicies,omitempty"`
 	// Additional policies to add for roles
 	AdditionalPolicies *map[string]string `json:"additionalPolicies,omitempty"`
 	// A collection of files assets for deployed cluster wide
 	FileAssets []FileAssetSpec `json:"fileAssets,omitempty"`
 	// EtcdClusters stores the configuration for each cluster
-	EtcdClusters []*EtcdClusterSpec `json:"etcdClusters,omitempty"`
-
+	EtcdClusters []EtcdClusterSpec `json:"etcdClusters,omitempty"`
 	// Component configurations
+	Containerd                     *ContainerdConfig             `json:"containerd,omitempty"`
 	Docker                         *DockerConfig                 `json:"docker,omitempty"`
 	KubeDNS                        *KubeDNSConfig                `json:"kubeDNS,omitempty"`
 	KubeAPIServer                  *KubeAPIServerConfig          `json:"kubeAPIServer,omitempty"`
@@ -145,6 +156,12 @@ type ClusterSpec struct {
 	MasterKubelet                  *KubeletConfigSpec            `json:"masterKubelet,omitempty"`
 	CloudConfig                    *CloudConfiguration           `json:"cloudConfig,omitempty"`
 	ExternalDNS                    *ExternalDNSConfig            `json:"externalDns,omitempty"`
+
+	// NodeTerminationHandlerConfig determines the cluster autoscaler configuration.
+	NodeTerminationHandler *NodeTerminationHandlerConfig `json:"nodeTerminationHandler,omitempty"`
+	// MetricsServerConfig determines the metrics server configuration.
+	MetricsServer *MetricsServerConfig `json:"metricsServer,omitempty"`
+
 	// Networking configuration
 	Networking *NetworkingSpec `json:"networking,omitempty"`
 	// API field controls how the API is exposed outside the cluster
@@ -169,6 +186,18 @@ type ClusterSpec struct {
 	DisableSubnetTags bool `json:"DisableSubnetTags,omitempty"`
 	// Target allows for us to nest extra config for targets such as terraform
 	Target *TargetSpec `json:"target,omitempty"`
+	// UseHostCertificates will mount /etc/ssl/certs to inside needed containers.
+	// This is needed if some APIs do have self-signed certs
+	UseHostCertificates *bool `json:"useHostCertificates,omitempty"`
+	// SysctlParameters will configure kernel parameters using sysctl(8). When
+	// specified, each parameter must follow the form variable=value, the way
+	// it would appear in sysctl.conf.
+	SysctlParameters []string `json:"sysctlParameters,omitempty"`
+	// RollingUpdate defines the default rolling-update settings for instance groups
+	RollingUpdate *RollingUpdate `json:"rollingUpdate,omitempty"`
+
+	// ClusterAutoscaler defines the cluaster autoscaler configuration.
+	ClusterAutoscaler *ClusterAutoscalerConfig `json:"clusterAutoscaler,omitempty"`
 }
 
 // NodeAuthorizationSpec is used to node authorization
@@ -182,13 +211,15 @@ type NodeAuthorizerSpec struct {
 	// Authorizer is the authorizer to use
 	Authorizer string `json:"authorizer,omitempty"`
 	// Features is a series of authorizer features to enable or disable
-	Features *[]string `json:"features,omitempty"`
+	Features []string `json:"features,omitempty"`
 	// Image is the location of container
 	Image string `json:"image,omitempty"`
 	// NodeURL is the node authorization service url
 	NodeURL string `json:"nodeURL,omitempty"`
 	// Port is the port the service is running on the master
 	Port int `json:"port,omitempty"`
+	// Interval the time between retires for authorization request
+	Interval *metav1.Duration `json:"interval,omitempty"`
 	// Timeout the max time for authorization request
 	Timeout *metav1.Duration `json:"timeout,omitempty"`
 	// TokenTTL is the max ttl for an issued token
@@ -227,8 +258,9 @@ type Assets struct {
 
 // IAMSpec adds control over the IAM security policies applied to resources
 type IAMSpec struct {
-	Legacy                 bool `json:"legacy"`
-	AllowContainerRegistry bool `json:"allowContainerRegistry,omitempty"`
+	Legacy                 bool    `json:"legacy"`
+	AllowContainerRegistry bool    `json:"allowContainerRegistry,omitempty"`
+	PermissionsBoundary    *string `json:"permissionsBoundary,omitempty"`
 }
 
 // HookSpec is a definition hook
@@ -278,6 +310,18 @@ type KopeioAuthenticationSpec struct {
 type AwsAuthenticationSpec struct {
 	// Image is the AWS IAM Authenticator docker image to uses
 	Image string `json:"image,omitempty"`
+	// BackendMode is the AWS IAM Authenticator backend to use. Default MountedFile
+	BackendMode string `json:"backendMode,omitempty"`
+	// ClusterID identifies the cluster performing authentication to prevent certain replay attacks. Default master public DNS name
+	ClusterID string `json:"clusterID,omitempty"`
+	// MemoryRequest memory request of AWS IAM Authenticator container. Default 20Mi
+	MemoryRequest *resource.Quantity `json:"memoryRequest,omitempty"`
+	// CPURequest CPU request of AWS IAM Authenticator container. Default 10m
+	CPURequest *resource.Quantity `json:"cpuRequest,omitempty"`
+	// MemoryLimit memory limit of AWS IAM Authenticator container. Default 20Mi
+	MemoryLimit *resource.Quantity `json:"memoryLimit,omitempty"`
+	// CPULimit CPU limit of AWS IAM Authenticator container. Default 10m
+	CPULimit *resource.Quantity `json:"cpuLimit,omitempty"`
 }
 
 type AuthorizationSpec struct {
@@ -332,6 +376,8 @@ type LoadBalancerAccessSpec struct {
 	UseForInternalApi bool `json:"useForInternalApi,omitempty"`
 	// SSLCertificate allows you to specify the ACM cert to be used the LB
 	SSLCertificate string `json:"sslCertificate,omitempty"`
+	// CrossZoneLoadBalancing allows you to enable the cross zone load balancing
+	CrossZoneLoadBalancing *bool `json:"crossZoneLoadBalancing,omitempty"`
 }
 
 // KubeDNSConfig defines the kube dns configuration
@@ -340,8 +386,12 @@ type KubeDNSConfig struct {
 	CacheMaxSize int `json:"cacheMaxSize,omitempty"`
 	// CacheMaxConcurrent is the maximum number of concurrent queries for dnsmasq
 	CacheMaxConcurrent int `json:"cacheMaxConcurrent,omitempty"`
+	// CoreDNSImage is used to override the default image used for CoreDNS
+	CoreDNSImage string `json:"coreDNSImage,omitempty"`
 	// Domain is the dns domain
 	Domain string `json:"domain,omitempty"`
+	// ExternalCoreFile is used to provide a complete CoreDNS CoreFile by the user - ignores other provided flags which modify the CoreFile.
+	ExternalCoreFile string `json:"externalCoreFile,omitempty"`
 	// Image is the name of the docker image to run - @deprecated as this is now in the addon
 	Image string `json:"image,omitempty"`
 	// Replicas is the number of pod replicas - @deprecated as this is now in the addon, and controlled by autoscaler
@@ -360,6 +410,20 @@ type KubeDNSConfig struct {
 	CPURequest *resource.Quantity `json:"cpuRequest,omitempty"`
 	// MemoryLimit specifies the memory limit of each dns container in the cluster. Default 170m.
 	MemoryLimit *resource.Quantity `json:"memoryLimit,omitempty"`
+	// NodeLocalDNS specifies the configuration for the node-local-dns addon
+	NodeLocalDNS *NodeLocalDNSConfig `json:"nodeLocalDNS,omitempty"`
+}
+
+// NodeLocalDNSConfig are options of the node-local-dns
+type NodeLocalDNSConfig struct {
+	// Enabled activates the node-local-dns addon
+	Enabled *bool `json:"enabled,omitempty"`
+	// Local listen IP address. It can be any IP in the 169.254.20.0/16 space or any other IP address that can be guaranteed to not collide with any existing IP.
+	LocalIP string `json:"localIP,omitempty"`
+	// MemoryRequest specifies the memory requests of each node-local-dns container in the daemonset. Default 5Mi.
+	MemoryRequest *resource.Quantity `json:"memoryRequest,omitempty"`
+	// CPURequest specifies the cpu requests of each node-local-dns container in the daemonset. Default 25m.
+	CPURequest *resource.Quantity `json:"cpuRequest,omitempty"`
 }
 
 // ExternalDNSConfig are options of the dns-controller
@@ -388,7 +452,7 @@ type EtcdClusterSpec struct {
 	// We default to manager for kubernetes 1.11 or if the manager is configured; otherwise standalone.
 	Provider EtcdProviderType `json:"provider,omitempty"`
 	// Members stores the configurations for each member of the cluster (including the data volume)
-	Members []*EtcdMemberSpec `json:"etcdMembers,omitempty"`
+	Members []EtcdMemberSpec `json:"etcdMembers,omitempty"`
 	// EnableEtcdTLS indicates the etcd service should use TLS between peers and clients
 	EnableEtcdTLS bool `json:"enableEtcdTLS,omitempty"`
 	// EnableTLSAuth indicates client and peer TLS auth should be enforced
@@ -423,6 +487,11 @@ type EtcdBackupSpec struct {
 type EtcdManagerSpec struct {
 	// Image is the etcd manager image to use.
 	Image string `json:"image,omitempty"`
+	// Env allows users to pass in env variables to the etcd-manager container.
+	// Variables starting with ETCD_ will be further passed down to the etcd process.
+	// This allows etcd setting to be configured/overwriten. No config validation is done.
+	// A list of etcd config ENV vars can be found at https://github.com/etcd-io/etcd/blob/master/Documentation/op-guide/configuration.md
+	Env []EnvVar `json:"env,omitempty"`
 }
 
 // EtcdMemberSpec is a specification for a etcd member
@@ -504,4 +573,67 @@ type TerraformSpec struct {
 
 func (t *TerraformSpec) IsEmpty() bool {
 	return t.ProviderExtraConfig == nil
+}
+
+// EnvVar represents an environment variable present in a Container.
+type EnvVar struct {
+	// Name of the environment variable. Must be a C_IDENTIFIER.
+	Name string `json:"name"`
+
+	// Variable references $(VAR_NAME) are expanded
+	// using the previous defined environment variables in the container and
+	// any service environment variables. If a variable cannot be resolved,
+	// the reference in the input string will be unchanged. The $(VAR_NAME)
+	// syntax can be escaped with a double $$, ie: $$(VAR_NAME). Escaped
+	// references will never be expanded, regardless of whether the variable
+	// exists or not.
+	// Defaults to "".
+	// +optional
+	Value string `json:"value,omitempty"`
+}
+
+type GossipConfig struct {
+	Protocol  *string       `json:"protocol,omitempty"`
+	Listen    *string       `json:"listen,omitempty"`
+	Secret    *string       `json:"secret,omitempty"`
+	Secondary *GossipConfig `json:"secondary,omitempty"`
+}
+
+type DNSControllerGossipConfig struct {
+	Protocol  *string                    `json:"protocol,omitempty"`
+	Listen    *string                    `json:"listen,omitempty"`
+	Secret    *string                    `json:"secret,omitempty"`
+	Secondary *DNSControllerGossipConfig `json:"secondary,omitempty"`
+	Seed      *string                    `json:"seed,omitempty"`
+}
+
+type RollingUpdate struct {
+	// DrainAndTerminate enables draining and terminating nodes during rolling updates.
+	// Defaults to true.
+	DrainAndTerminate *bool `json:"drainAndTerminate,omitempty"`
+	// MaxUnavailable is the maximum number of nodes that can be unavailable during the update.
+	// The value can be an absolute number (for example 5) or a percentage of desired
+	// nodes (for example 10%).
+	// The absolute number is calculated from a percentage by rounding down.
+	// Defaults to 1 if MaxSurge is 0, otherwise defaults to 0.
+	// Example: when this is set to 30%, the InstanceGroup can be scaled
+	// down to 70% of desired nodes immediately when the rolling update
+	// starts. Once new nodes are ready, more old nodes can be drained,
+	// ensuring that the total number of nodes available at all times
+	// during the update is at least 70% of desired nodes.
+	// +optional
+	MaxUnavailable *intstr.IntOrString `json:"maxUnavailable,omitempty"`
+	// MaxSurge is the maximum number of extra nodes that can be created
+	// during the update.
+	// The value can be an absolute number (for example 5) or a percentage of
+	// desired machines (for example 10%).
+	// The absolute number is calculated from a percentage by rounding up.
+	// Has no effect on instance groups with role "Master".
+	// Defaults to 1 on AWS, 0 otherwise.
+	// Example: when this is set to 30%, the InstanceGroup can be scaled
+	// up immediately when the rolling update starts, such that the total
+	// number of old and new nodes do not exceed 130% of desired
+	// nodes.
+	// +optional
+	MaxSurge *intstr.IntOrString `json:"maxSurge,omitempty"`
 }

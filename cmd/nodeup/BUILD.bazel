@@ -8,9 +8,8 @@ go_library(
     deps = [
         "//:go_default_library",
         "//nodeup/pkg/bootstrap:go_default_library",
-        "//upup/models:go_default_library",
         "//upup/pkg/fi/nodeup:go_default_library",
-        "//vendor/k8s.io/klog:go_default_library",
+        "//vendor/k8s.io/klog/v2:go_default_library",
     ],
 )
 

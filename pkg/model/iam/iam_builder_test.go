@@ -18,14 +18,12 @@ package iam
 
 import (
 	"encoding/json"
-	"io/ioutil"
-	"strings"
 	"testing"
 
 	"github.com/aws/aws-sdk-go/aws"
 
 	"k8s.io/kops/pkg/apis/kops"
-	"k8s.io/kops/pkg/diff"
+	"k8s.io/kops/pkg/testutils/golden"
 	"k8s.io/kops/pkg/util/stringorslice"
 )
 
@@ -50,11 +48,31 @@ func TestRoundTrip(t *testing.T) {
 			},
 			JSON: "{\"Effect\":\"Deny\",\"Action\":[\"ec2:DescribeRegions\",\"ec2:DescribeInstances\"],\"Resource\":[\"a\",\"b\"]}",
 		},
+		{
+			IAM: &Statement{
+				Effect:    StatementEffectDeny,
+				Principal: Principal{Federated: "federated"},
+				Condition: map[string]interface{}{
+					"foo": 1,
+				},
+			},
+			JSON: "{\"Effect\":\"Deny\",\"Principal\":{\"Federated\":\"federated\"},\"Condition\":{\"foo\":1}}",
+		},
+		{
+			IAM: &Statement{
+				Effect:    StatementEffectDeny,
+				Principal: Principal{Service: "service"},
+				Condition: map[string]interface{}{
+					"bar": "baz",
+				},
+			},
+			JSON: "{\"Effect\":\"Deny\",\"Principal\":{\"Service\":\"service\"},\"Condition\":{\"bar\":\"baz\"}}",
+		},
 	}
 	for _, g := range grid {
 		actualJSON, err := json.Marshal(g.IAM)
 		if err != nil {
-			t.Errorf("error encoding IAM %s to json: %v", g.IAM, err)
+			t.Errorf("error encoding IAM %v to json: %v", g.IAM, err)
 		}
 
 		if g.JSON != string(actualJSON) {
@@ -76,61 +94,61 @@ func TestRoundTrip(t *testing.T) {
 
 func TestPolicyGeneration(t *testing.T) {
 	grid := []struct {
-		Role                   kops.InstanceGroupRole
+		Role                   Subject
 		LegacyIAM              bool
 		AllowContainerRegistry bool
 		Policy                 string
 	}{
 		{
-			Role:                   "Master",
+			Role:                   &NodeRoleMaster{},
 			LegacyIAM:              true,
 			AllowContainerRegistry: false,
 			Policy:                 "tests/iam_builder_master_legacy.json",
 		},
 		{
-			Role:                   "Master",
+			Role:                   &NodeRoleMaster{},
 			LegacyIAM:              false,
 			AllowContainerRegistry: false,
 			Policy:                 "tests/iam_builder_master_strict.json",
 		},
 		{
-			Role:                   "Master",
+			Role:                   &NodeRoleMaster{},
 			LegacyIAM:              false,
 			AllowContainerRegistry: true,
 			Policy:                 "tests/iam_builder_master_strict_ecr.json",
 		},
 		{
-			Role:                   "Node",
+			Role:                   &NodeRoleNode{},
 			LegacyIAM:              true,
 			AllowContainerRegistry: false,
 			Policy:                 "tests/iam_builder_node_legacy.json",
 		},
 		{
-			Role:                   "Node",
+			Role:                   &NodeRoleNode{},
 			LegacyIAM:              false,
 			AllowContainerRegistry: false,
 			Policy:                 "tests/iam_builder_node_strict.json",
 		},
 		{
-			Role:                   "Node",
+			Role:                   &NodeRoleNode{},
 			LegacyIAM:              false,
 			AllowContainerRegistry: true,
 			Policy:                 "tests/iam_builder_node_strict_ecr.json",
 		},
 		{
-			Role:                   "Bastion",
+			Role:                   &NodeRoleBastion{},
 			LegacyIAM:              true,
 			AllowContainerRegistry: false,
 			Policy:                 "tests/iam_builder_bastion.json",
 		},
 		{
-			Role:                   "Bastion",
+			Role:                   &NodeRoleBastion{},
 			LegacyIAM:              false,
 			AllowContainerRegistry: false,
 			Policy:                 "tests/iam_builder_bastion.json",
 		},
 		{
-			Role:                   "Bastion",
+			Role:                   &NodeRoleBastion{},
 			LegacyIAM:              false,
 			AllowContainerRegistry: true,
 			Policy:                 "tests/iam_builder_bastion.json",
@@ -146,9 +164,9 @@ func TestPolicyGeneration(t *testing.T) {
 						Legacy:                 x.LegacyIAM,
 						AllowContainerRegistry: x.AllowContainerRegistry,
 					},
-					EtcdClusters: []*kops.EtcdClusterSpec{
+					EtcdClusters: []kops.EtcdClusterSpec{
 						{
-							Members: []*kops.EtcdMemberSpec{
+							Members: []kops.EtcdMemberSpec{
 								{
 									KmsKeyId: aws.String("key-id-1"),
 								},
@@ -158,10 +176,10 @@ func TestPolicyGeneration(t *testing.T) {
 							},
 						},
 						{
-							Members: []*kops.EtcdMemberSpec{},
+							Members: []kops.EtcdMemberSpec{},
 						},
 						{
-							Members: []*kops.EtcdMemberSpec{
+							Members: []kops.EtcdMemberSpec{
 								{
 									KmsKeyId: aws.String("key-id-3"),
 								},
@@ -185,19 +203,7 @@ func TestPolicyGeneration(t *testing.T) {
 			t.Errorf("case %d failed to convert generated IAM Policy to JSON. Error: %v", i, err)
 			continue
 		}
-		actualPolicy = strings.TrimSpace(actualPolicy)
 
-		expectedPolicyBytes, err := ioutil.ReadFile(x.Policy)
-		if err != nil {
-			t.Fatalf("unexpected error reading IAM Policy from file %q: %v", x.Policy, err)
-		}
-		expectedPolicy := strings.TrimSpace(string(expectedPolicyBytes))
-
-		if expectedPolicy != actualPolicy {
-			diffString := diff.FormatDiff(expectedPolicy, actualPolicy)
-			t.Logf("diff:\n%s\n", diffString)
-			t.Errorf("case %d failed, policy output differed from expected (%s).", i, x.Policy)
-			continue
-		}
+		golden.AssertMatchesFile(t, actualPolicy, x.Policy)
 	}
 }

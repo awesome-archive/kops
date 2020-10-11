@@ -37,7 +37,7 @@ spec:
     spec:
       containers:
       - name: kube-router
-        image: cloudnativelabs/kube-router:v0.1.0
+        image: cloudnativelabs/kube-router:v0.3.1
         args:
         - --run-router=true
         - --run-firewall=true
@@ -90,10 +90,7 @@ spec:
       hostNetwork: true
       serviceAccountName: kube-router
       tolerations:
-      - key: CriticalAddonsOnly
-        operator: Exists
-      - effect: NoSchedule
-        operator: Exists
+      - operator: Exists
       volumes:
       - hostPath:
           path: /lib/modules

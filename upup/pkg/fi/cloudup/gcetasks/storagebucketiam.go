@@ -20,14 +20,14 @@ import (
 	"fmt"
 
 	"google.golang.org/api/storage/v1"
-	"k8s.io/klog"
+	"k8s.io/klog/v2"
 	"k8s.io/kops/upup/pkg/fi"
 	"k8s.io/kops/upup/pkg/fi/cloudup/gce"
 	"k8s.io/kops/upup/pkg/fi/cloudup/terraform"
 )
 
 // StorageBucketIam represents an IAM policy on a google cloud storage bucket
-//go:generate fitask -type=StorageBucketIam
+// +kops:fitask
 type StorageBucketIam struct {
 	Name      *string
 	Lifecycle *fi.Lifecycle
@@ -147,10 +147,10 @@ func (_ *StorageBucketIam) RenderGCE(t *gce.GCEAPITarget, a, e, changes *Storage
 	return nil
 }
 
-type terraformStorageBucketIam struct {
-	Bucket     string   `json:"bucket,omitempty"`
-	RoleEntity []string `json:"role_entity,omitempty"`
-}
+// type terraformStorageBucketIam struct {
+// 	Bucket     string   `json:"bucket,omitempty" cty:"bucket"`
+// 	RoleEntity []string `json:"role_entity,omitempty" cty:"role_entity"`
+// }
 
 func (_ *StorageBucketIam) RenderTerraform(t *terraform.TerraformTarget, a, e, changes *StorageBucketIam) error {
 	//var roleEntities []string

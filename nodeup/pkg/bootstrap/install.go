@@ -1,5 +1,5 @@
 /*
-Copyright 2016 The Kubernetes Authors.
+Copyright 2019 The Kubernetes Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -22,31 +22,26 @@ import (
 	"os"
 	"strings"
 
-	"k8s.io/apimachinery/pkg/util/sets"
-	"k8s.io/klog"
-	"k8s.io/kops/nodeup/pkg/distros"
+	"k8s.io/klog/v2"
 	"k8s.io/kops/pkg/systemd"
 	"k8s.io/kops/upup/pkg/fi"
 	"k8s.io/kops/upup/pkg/fi/nodeup/local"
 	"k8s.io/kops/upup/pkg/fi/nodeup/nodetasks"
+	"k8s.io/kops/util/pkg/distributions"
 	"k8s.io/kops/util/pkg/vfs"
 )
 
 type Installation struct {
-	FSRoot          string
 	CacheDir        string
 	RunTasksOptions fi.RunTasksOptions
 	Command         []string
 }
 
 func (i *Installation) Run() error {
-	distribution, err := distros.FindDistribution(i.FSRoot)
+	_, err := distributions.FindDistribution("/")
 	if err != nil {
 		return fmt.Errorf("error determining OS distribution: %v", err)
 	}
-
-	tags := sets.NewString()
-	tags.Insert(distribution.BuildTags()...)
 
 	tasks := make(map[string]fi.Task)
 
@@ -75,7 +70,6 @@ func (i *Installation) Run() error {
 
 	target := &local.LocalTarget{
 		CacheDir: i.CacheDir,
-		Tags:     tags,
 	}
 
 	checkExisting := true
@@ -150,6 +144,8 @@ func (i *Installation) buildSystemdJob() *nodetasks.Service {
 			"OS_PASSWORD",
 			"OS_AUTH_URL",
 			"OS_REGION_NAME",
+			"OS_APPLICATION_CREDENTIAL_ID",
+			"OS_APPLICATION_CREDENTIAL_SECRET",
 		} {
 			buffer.WriteString("'")
 			buffer.WriteString(envVar)

@@ -1,5 +1,5 @@
 /*
-Copyright 2016 The Kubernetes Authors.
+Copyright 2019 The Kubernetes Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -21,14 +21,14 @@ import (
 
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/ec2"
-	"k8s.io/klog"
+	"k8s.io/klog/v2"
 	"k8s.io/kops/upup/pkg/fi"
 	"k8s.io/kops/upup/pkg/fi/cloudup/awsup"
 	"k8s.io/kops/upup/pkg/fi/cloudup/cloudformation"
 	"k8s.io/kops/upup/pkg/fi/cloudup/terraform"
 )
 
-//go:generate fitask -type=Route
+// +kops:fitask
 type Route struct {
 	Name      *string
 	Lifecycle *fi.Lifecycle
@@ -160,10 +160,6 @@ func (_ *Route) RenderAWS(t *awsup.AWSAPITarget, a, e, changes *Route) error {
 		} else if e.InternetGateway != nil {
 			request.GatewayId = checkNotNil(e.InternetGateway.ID)
 		} else if e.NatGateway != nil {
-			if err := e.NatGateway.waitAvailable(t.Cloud); err != nil {
-				return err
-			}
-
 			request.NatGatewayId = checkNotNil(e.NatGateway.ID)
 		}
 
@@ -175,7 +171,13 @@ func (_ *Route) RenderAWS(t *awsup.AWSAPITarget, a, e, changes *Route) error {
 
 		response, err := t.Cloud.EC2().CreateRoute(request)
 		if err != nil {
-			return fmt.Errorf("error creating Route: %v", err)
+			code := awsup.AWSErrorCode(err)
+			message := awsup.AWSErrorMessage(err)
+			if code == "InvalidNatGatewayID.NotFound" {
+				klog.V(4).Infof("error creating Route: %s", message)
+				return fi.NewTryAgainLaterError("waiting for the NAT Gateway to be created")
+			}
+			return fmt.Errorf("error creating Route: %s", message)
 		}
 
 		if !aws.BoolValue(response.Return) {
@@ -191,10 +193,6 @@ func (_ *Route) RenderAWS(t *awsup.AWSAPITarget, a, e, changes *Route) error {
 		} else if e.InternetGateway != nil {
 			request.GatewayId = checkNotNil(e.InternetGateway.ID)
 		} else if e.NatGateway != nil {
-			if err := e.NatGateway.waitAvailable(t.Cloud); err != nil {
-				return err
-			}
-
 			request.NatGatewayId = checkNotNil(e.NatGateway.ID)
 		}
 
@@ -204,9 +202,14 @@ func (_ *Route) RenderAWS(t *awsup.AWSAPITarget, a, e, changes *Route) error {
 
 		klog.V(2).Infof("Updating Route with RouteTable:%q CIDR:%q", *e.RouteTable.ID, *e.CIDR)
 
-		_, err := t.Cloud.EC2().ReplaceRoute(request)
-		if err != nil {
-			return fmt.Errorf("error updating Route: %v", err)
+		if _, err := t.Cloud.EC2().ReplaceRoute(request); err != nil {
+			code := awsup.AWSErrorCode(err)
+			message := awsup.AWSErrorMessage(err)
+			if code == "InvalidNatGatewayID.NotFound" {
+				klog.V(4).Infof("error creating Route: %s", message)
+				return fi.NewTryAgainLaterError("waiting for the NAT Gateway to be created")
+			}
+			return fmt.Errorf("error creating Route: %s", message)
 		}
 	}
 
@@ -221,11 +224,11 @@ func checkNotNil(s *string) *string {
 }
 
 type terraformRoute struct {
-	RouteTableID      *terraform.Literal `json:"route_table_id"`
-	CIDR              *string            `json:"destination_cidr_block,omitempty"`
-	InternetGatewayID *terraform.Literal `json:"gateway_id,omitempty"`
-	NATGatewayID      *terraform.Literal `json:"nat_gateway_id,omitempty"`
-	InstanceID        *terraform.Literal `json:"instance_id,omitempty"`
+	RouteTableID      *terraform.Literal `json:"route_table_id" cty:"route_table_id"`
+	CIDR              *string            `json:"destination_cidr_block,omitempty" cty:"destination_cidr_block"`
+	InternetGatewayID *terraform.Literal `json:"gateway_id,omitempty" cty:"gateway_id"`
+	NATGatewayID      *terraform.Literal `json:"nat_gateway_id,omitempty" cty:"nat_gateway_id"`
+	InstanceID        *terraform.Literal `json:"instance_id,omitempty" cty:"instance_id"`
 }
 
 func (_ *Route) RenderTerraform(t *terraform.TerraformTarget, a, e, changes *Route) error {
@@ -246,7 +249,10 @@ func (_ *Route) RenderTerraform(t *terraform.TerraformTarget, a, e, changes *Rou
 		tf.InstanceID = e.Instance.TerraformLink()
 	}
 
-	return t.RenderResource("aws_route", *e.Name, tf)
+	// Terraform 0.12 doesn't support resource names that start with digits. See #7052
+	// and https://www.terraform.io/upgrade-guides/0-12.html#pre-upgrade-checklist
+	name := fmt.Sprintf("route-%v", *e.Name)
+	return t.RenderResource("aws_route", name, tf)
 }
 
 type cloudformationRoute struct {

@@ -1,5 +1,5 @@
 /*
-Copyright 2016 The Kubernetes Authors.
+Copyright 2019 The Kubernetes Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -24,7 +24,7 @@ import (
 	"reflect"
 	"strings"
 
-	"k8s.io/klog"
+	"k8s.io/klog/v2"
 	"k8s.io/kops/dnsprovider/pkg/dnsprovider"
 	"k8s.io/kops/pkg/apis/kops"
 	"k8s.io/kops/util/pkg/vfs"
@@ -125,7 +125,7 @@ func (c *Context) Render(a, e, changes Task) error {
 
 			switch *lifecycle {
 			case LifecycleExistsAndValidates:
-				return fmt.Errorf("Lifecycle set to ExistsAndValidates, but object was not found")
+				return fmt.Errorf("lifecycle set to ExistsAndValidates, but object was not found")
 			case LifecycleExistsAndWarnIfChanges:
 				return NewExistsAndWarnIfChangesError("Lifecycle set to ExistsAndWarnIfChanges and object was not found.")
 			}
@@ -158,11 +158,10 @@ func (c *Context) Render(a, e, changes Task) error {
 				b.WriteTo(out)
 
 				if *lifecycle == LifecycleExistsAndValidates {
-					return fmt.Errorf("Lifecycle set to ExistsAndValidates, but object did not match")
-				} else {
-					// Warn, but then we continue
-					return nil
+					return fmt.Errorf("lifecycle set to ExistsAndValidates, but object did not match")
 				}
+				// Warn, but then we continue
+				return nil
 			}
 		}
 	}
@@ -205,7 +204,7 @@ func (c *Context) Render(a, e, changes Task) error {
 		}
 		if match {
 			if renderer != nil {
-				return fmt.Errorf("Found multiple Render methods that could be invokved on %T", e)
+				return fmt.Errorf("found multiple Render methods that could be involved on %T", e)
 			}
 			renderer = &method
 			rendererArgs = args
@@ -213,7 +212,7 @@ func (c *Context) Render(a, e, changes Task) error {
 
 	}
 	if renderer == nil {
-		return fmt.Errorf("Could not find Render method on type %T (target %T)", e, c.Target)
+		return fmt.Errorf("could not find Render method on type %T (target %T)", e, c.Target)
 	}
 	rendererArgs = append(rendererArgs, reflect.ValueOf(a))
 	rendererArgs = append(rendererArgs, reflect.ValueOf(e))
@@ -256,3 +255,18 @@ func NewExistsAndWarnIfChangesError(message string) *ExistsAndWarnIfChangesError
 
 // ExistsAndWarnIfChangesError implementation of the error interface.
 func (e *ExistsAndWarnIfChangesError) Error() string { return e.msg }
+
+// TryAgainLaterError is the custom used when a task needs to fail validation with a message and try again later
+type TryAgainLaterError struct {
+	msg string
+}
+
+// NewTryAgainLaterError is a builder for TryAgainLaterError.
+func NewTryAgainLaterError(message string) *TryAgainLaterError {
+	return &TryAgainLaterError{
+		msg: message,
+	}
+}
+
+// TryAgainLaterError implementation of the error interface.
+func (e *TryAgainLaterError) Error() string { return e.msg }

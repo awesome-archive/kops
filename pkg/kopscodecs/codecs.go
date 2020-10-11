@@ -1,5 +1,5 @@
 /*
-Copyright 2016 The Kubernetes Authors.
+Copyright 2019 The Kubernetes Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -25,7 +25,7 @@ import (
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/runtime/serializer"
-	"k8s.io/klog"
+	"k8s.io/klog/v2"
 	"k8s.io/kops/pkg/apis/kops"
 	"k8s.io/kops/pkg/apis/kops/install"
 	"k8s.io/kops/pkg/apis/kops/v1alpha2"
@@ -104,14 +104,6 @@ func rewriteAPIGroup(y []byte) []byte {
 	for i := range lines {
 		if !bytes.Contains(lines[i], []byte("apiVersion:")) {
 			continue
-		}
-
-		{
-			re := regexp.MustCompile("kops/v1alpha1")
-			if re.Match(lines[i]) {
-				lines[i] = re.ReplaceAllLiteral(lines[i], []byte("kops.k8s.io/v1alpha1"))
-				changed = true
-			}
 		}
 
 		{

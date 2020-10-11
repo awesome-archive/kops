@@ -1,5 +1,5 @@
 /*
-Copyright 2016 The Kubernetes Authors.
+Copyright 2019 The Kubernetes Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -18,7 +18,6 @@ package awstasks
 
 import (
 	"fmt"
-	"time"
 
 	"k8s.io/kops/upup/pkg/fi"
 	"k8s.io/kops/upup/pkg/fi/cloudup/awsup"
@@ -28,10 +27,10 @@ import (
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/aws/awserr"
 	"github.com/aws/aws-sdk-go/service/iam"
-	"k8s.io/klog"
+	"k8s.io/klog/v2"
 )
 
-//go:generate fitask -type=IAMInstanceProfile
+// +kops:fitask
 type IAMInstanceProfile struct {
 	Name      *string
 	Lifecycle *fi.Lifecycle
@@ -124,31 +123,6 @@ func (_ *IAMInstanceProfile) RenderAWS(t *awsup.AWSAPITarget, a, e, changes *IAM
 
 		e.ID = response.InstanceProfile.InstanceProfileId
 		e.Name = response.InstanceProfile.InstanceProfileName
-
-		// IAM instance profile seems to be highly asynchronous
-		// and if we don't wait creating dependent resources fail
-		attempt := 0
-		for {
-			if attempt > 10 {
-				klog.Warningf("unable to retrieve newly-created IAM instance profile %q; timed out", *e.Name)
-				break
-			}
-
-			ip, err := findIAMInstanceProfile(t.Cloud, *e.Name)
-			if err != nil {
-				klog.Warningf("ignoring error while retrieving newly-created IAM instance profile %q: %v", *e.Name, err)
-			}
-
-			if ip != nil {
-				// Found
-				klog.V(4).Infof("Found IAM instance profile %q", *e.Name)
-				break
-			}
-
-			// TODO: Use a real backoff algorithm
-			time.Sleep(3 * time.Second)
-			attempt++
-		}
 	}
 
 	// TODO: Should we use path as our tag?

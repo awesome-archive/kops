@@ -21,37 +21,15 @@ import (
 
 	"k8s.io/kops/pkg/apis/kops"
 	"k8s.io/kops/pkg/model"
+	"k8s.io/kops/pkg/model/iam"
+	"k8s.io/kops/pkg/testutils"
 	"k8s.io/kops/upup/pkg/fi"
 	"k8s.io/kops/upup/pkg/fi/cloudup/awstasks"
 )
 
 func buildMinimalCluster() *kops.Cluster {
-	c := &kops.Cluster{}
-	c.ObjectMeta.Name = "testcluster.test.com"
-	c.Spec.KubernetesVersion = "1.4.6"
-	c.Spec.Subnets = []kops.ClusterSubnetSpec{
-		{Name: "subnet-us-mock-1a", Zone: "us-mock-1a", CIDR: "172.20.1.0/24", Type: kops.SubnetTypePrivate},
-	}
+	return testutils.BuildMinimalCluster("testcluster.test.com")
 
-	c.Spec.KubernetesAPIAccess = []string{"0.0.0.0/0"}
-	c.Spec.SSHAccess = []string{"0.0.0.0/0"}
-
-	// Default to public topology
-	c.Spec.Topology = &kops.TopologySpec{
-		Masters: kops.TopologyPublic,
-		Nodes:   kops.TopologyPublic,
-	}
-	c.Spec.NetworkCIDR = "172.20.0.0/16"
-	c.Spec.NonMasqueradeCIDR = "100.64.0.0/10"
-	c.Spec.CloudProvider = "aws"
-
-	c.Spec.ConfigBase = "s3://unittest-bucket/"
-
-	// Required to stop a call to cloud provider
-	// TODO: Mock cloudprovider
-	c.Spec.DNSZone = "test.com"
-
-	return c
 }
 
 func buildNodeInstanceGroup(subnets ...string) *kops.InstanceGroup {
@@ -78,9 +56,9 @@ func TestRootVolumeOptimizationFlag(t *testing.T) {
 	b := AutoscalingGroupModelBuilder{
 		AWSModelContext: &AWSModelContext{
 			KopsModelContext: &model.KopsModelContext{
-				SSHPublicKeys:  k,
-				Cluster:        cluster,
-				InstanceGroups: igs,
+				IAMModelContext: iam.IAMModelContext{Cluster: cluster},
+				SSHPublicKeys:   k,
+				InstanceGroups:  igs,
 			},
 		},
 	}
@@ -91,7 +69,7 @@ func TestRootVolumeOptimizationFlag(t *testing.T) {
 
 	b.Build(c)
 
-	lc := c.Tasks["LaunchConfiguration/nodes.testcluster.test.com"].(*awstasks.LaunchConfiguration)
+	lc := c.Tasks["LaunchTemplate/nodes.testcluster.test.com"].(*awstasks.LaunchTemplate)
 
 	if *lc.RootVolumeOptimization == false {
 		t.Fatalf("RootVolumeOptimization was expected to be true, but was false")

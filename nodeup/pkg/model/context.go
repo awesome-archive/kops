@@ -1,5 +1,5 @@
 /*
-Copyright 2016 The Kubernetes Authors.
+Copyright 2019 The Kubernetes Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -22,27 +22,32 @@ import (
 	"path/filepath"
 	"strings"
 
-	"k8s.io/kops/nodeup/pkg/distros"
+	"k8s.io/klog/v2"
 	"k8s.io/kops/pkg/apis/kops"
+	"k8s.io/kops/pkg/apis/kops/model"
 	"k8s.io/kops/pkg/apis/kops/util"
 	"k8s.io/kops/pkg/apis/nodeup"
-	"k8s.io/kops/pkg/kubeconfig"
 	"k8s.io/kops/pkg/systemd"
 	"k8s.io/kops/upup/pkg/fi"
 	"k8s.io/kops/upup/pkg/fi/nodeup/nodetasks"
+	"k8s.io/kops/util/pkg/architectures"
+	"k8s.io/kops/util/pkg/distributions"
 	"k8s.io/kops/util/pkg/vfs"
-	"k8s.io/kubernetes/pkg/util/mount"
+	"k8s.io/utils/mount"
 
-	"github.com/blang/semver"
-	"k8s.io/klog"
+	"github.com/aws/aws-sdk-go/aws"
+	"github.com/aws/aws-sdk-go/aws/session"
+	"github.com/aws/aws-sdk-go/service/ec2"
+	"github.com/blang/semver/v4"
 )
 
 // NodeupModelContext is the context supplied the nodeup tasks
 type NodeupModelContext struct {
-	Architecture  Architecture
+	Architecture  architectures.Architecture
 	Assets        *fi.AssetStore
 	Cluster       *kops.Cluster
-	Distribution  distros.Distribution
+	ConfigBase    vfs.Path
+	Distribution  distributions.Distribution
 	InstanceGroup *kops.InstanceGroup
 	KeyStore      fi.CAStore
 	NodeupConfig  *nodeup.Config
@@ -52,6 +57,7 @@ type NodeupModelContext struct {
 	IsMaster bool
 
 	kubernetesVersion semver.Version
+	bootstrapCerts    map[string]*nodetasks.BootstrapCert
 }
 
 // Init completes initialization of the object, for example pre-parsing the kubernetes version
@@ -61,10 +67,9 @@ func (c *NodeupModelContext) Init() error {
 		return fmt.Errorf("unable to parse KubernetesVersion %q", c.Cluster.Spec.KubernetesVersion)
 	}
 	c.kubernetesVersion = *k8sVersion
+	c.bootstrapCerts = map[string]*nodetasks.BootstrapCert{}
 
-	if c.InstanceGroup == nil {
-		klog.Warningf("cannot determine role, InstanceGroup not set")
-	} else if c.InstanceGroup.Spec.Role == kops.InstanceGroupRoleMaster {
+	if c.NodeupConfig.InstanceGroupRole == kops.InstanceGroupRoleMaster {
 		c.IsMaster = true
 	}
 
@@ -76,11 +81,11 @@ func (c *NodeupModelContext) SSLHostPaths() []string {
 	paths := []string{"/etc/ssl", "/etc/pki/tls", "/etc/pki/ca-trust"}
 
 	switch c.Distribution {
-	case distros.DistributionCoreOS:
-		// Because /usr is read-only on CoreOS, we can't have any new directories; docker will try (and fail) to create them
+	case distributions.DistributionFlatcar:
+		// Because /usr is read-only on Flatcar, we can't have any new directories; docker will try (and fail) to create them
 		// TODO: Just check if the directories exist?
 		paths = append(paths, "/usr/share/ca-certificates")
-	case distros.DistributionContainerOS:
+	case distributions.DistributionContainerOS:
 		paths = append(paths, "/usr/share/ca-certificates")
 	default:
 		paths = append(paths, "/usr/share/ssl", "/usr/ssl", "/usr/lib/ssl", "/usr/local/openssl", "/var/ssl", "/etc/openssl")
@@ -144,7 +149,7 @@ func (c *NodeupModelContext) IsMounted(m mount.Interface, device, path string) (
 // PathSrvKubernetes returns the path for the kubernetes service files
 func (c *NodeupModelContext) PathSrvKubernetes() string {
 	switch c.Distribution {
-	case distros.DistributionContainerOS:
+	case distributions.DistributionContainerOS:
 		return "/etc/srv/kubernetes"
 	default:
 		return "/srv/kubernetes"
@@ -156,23 +161,13 @@ func (c *NodeupModelContext) FileAssetsDefaultPath() string {
 	return filepath.Join(c.PathSrvKubernetes(), "assets")
 }
 
-// PathSrvSshproxy returns the path for the SSL proxy
+// PathSrvSshproxy returns the path for the SSH proxy
 func (c *NodeupModelContext) PathSrvSshproxy() string {
 	switch c.Distribution {
-	case distros.DistributionContainerOS:
+	case distributions.DistributionContainerOS:
 		return "/etc/srv/sshproxy"
 	default:
 		return "/srv/sshproxy"
-	}
-}
-
-// CNIBinDir returns the path for the CNI binaries
-func (c *NodeupModelContext) CNIBinDir() string {
-	switch c.Distribution {
-	case distros.DistributionContainerOS:
-		return "/home/kubernetes/bin/"
-	default:
-		return "/opt/cni/bin/"
 	}
 }
 
@@ -198,85 +193,117 @@ func (c *NodeupModelContext) KubeletKubeConfig() string {
 	return "/var/lib/kubelet/kubeconfig"
 }
 
-// CNIConfDir returns the CNI directory
-func (c *NodeupModelContext) CNIConfDir() string {
-	return "/etc/cni/net.d/"
-}
-
-// BuildPKIKubeconfig generates a kubeconfig
-func (c *NodeupModelContext) BuildPKIKubeconfig(name string) (string, error) {
-	ca, err := c.FindCert(fi.CertificateId_CA)
-	if err != nil {
-		return "", err
+// BuildIssuedKubeconfig generates a kubeconfig with a locally issued client certificate.
+func (c *NodeupModelContext) BuildIssuedKubeconfig(name string, subject nodetasks.PKIXName, ctx *fi.ModelBuilderContext) *fi.TaskDependentResource {
+	issueCert := &nodetasks.IssueCert{
+		Name:    name,
+		Signer:  fi.CertificateIDCA,
+		Type:    "client",
+		Subject: subject,
 	}
+	ctx.AddTask(issueCert)
+	certResource, keyResource, caResource := issueCert.GetResources()
 
-	cert, err := c.FindCert(name)
-	if err != nil {
-		return "", err
+	kubeConfig := &nodetasks.KubeConfig{
+		Name: name,
+		Cert: certResource,
+		Key:  keyResource,
+		CA:   caResource,
 	}
-
-	key, err := c.FindPrivateKey(name)
-	if err != nil {
-		return "", err
-	}
-
-	return c.BuildKubeConfig(name, ca, cert, key)
-}
-
-// BuildKubeConfig is responsible for building a kubeconfig
-func (c *NodeupModelContext) BuildKubeConfig(username string, ca, certificate, privateKey []byte) (string, error) {
-	user := kubeconfig.KubectlUser{
-		ClientCertificateData: certificate,
-		ClientKeyData:         privateKey,
-	}
-	cluster := kubeconfig.KubectlCluster{
-		CertificateAuthorityData: ca,
-	}
-
 	if c.IsMaster {
-		if c.IsKubernetesGTE("1.6") {
-			// @note: use https >= 1.6m even for local connections, so we can turn off the insecure port
-			cluster.Server = "https://127.0.0.1"
-		} else {
-			cluster.Server = "http://127.0.0.1:8080"
-		}
+		// @note: use https even for local connections, so we can turn off the insecure port
+		kubeConfig.ServerURL = "https://127.0.0.1"
 	} else {
-		cluster.Server = "https://" + c.Cluster.Spec.MasterInternalName
+		kubeConfig.ServerURL = "https://" + c.Cluster.Spec.MasterInternalName
 	}
+	ctx.AddTask(kubeConfig)
+	return kubeConfig.GetConfig()
+}
 
-	config := &kubeconfig.KubectlConfig{
-		ApiVersion: "v1",
-		Kind:       "Config",
-		Users: []*kubeconfig.KubectlUserWithName{
-			{
-				Name: username,
-				User: user,
-			},
-		},
-		Clusters: []*kubeconfig.KubectlClusterWithName{
-			{
-				Name:    "local",
-				Cluster: cluster,
-			},
-		},
-		Contexts: []*kubeconfig.KubectlContextWithName{
-			{
-				Name: "service-account-context",
-				Context: kubeconfig.KubectlContext{
-					Cluster: "local",
-					User:    username,
-				},
-			},
-		},
-		CurrentContext: "service-account-context",
+// GetBootstrapCert requests a certificate keypair from kops-controller.
+func (c *NodeupModelContext) GetBootstrapCert(name string) (cert, key fi.Resource) {
+	b, ok := c.bootstrapCerts[name]
+	if !ok {
+		b = &nodetasks.BootstrapCert{
+			Cert: &fi.TaskDependentResource{},
+			Key:  &fi.TaskDependentResource{},
+		}
+		c.bootstrapCerts[name] = b
 	}
+	return b.Cert, b.Key
+}
 
-	yaml, err := kops.ToRawYaml(config)
-	if err != nil {
-		return "", fmt.Errorf("error marshaling kubeconfig to yaml: %v", err)
+// BuildBootstrapKubeconfig generates a kubeconfig with a client certificate from either kops-controller or the state store.
+func (c *NodeupModelContext) BuildBootstrapKubeconfig(name string, ctx *fi.ModelBuilderContext) (fi.Resource, error) {
+	if c.UseKopsControllerForNodeBootstrap() {
+		cert, key := c.GetBootstrapCert(name)
+
+		ca, err := c.GetCert(fi.CertificateIDCA)
+		if err != nil {
+			return nil, err
+		}
+
+		kubeConfig := &nodetasks.KubeConfig{
+			Name: name,
+			Cert: cert,
+			Key:  key,
+			CA:   fi.NewBytesResource(ca),
+		}
+		if c.IsMaster {
+			// @note: use https even for local connections, so we can turn off the insecure port
+			kubeConfig.ServerURL = "https://127.0.0.1"
+		} else {
+			kubeConfig.ServerURL = "https://" + c.Cluster.Spec.MasterInternalName
+		}
+
+		err = ctx.EnsureTask(kubeConfig)
+		if err != nil {
+			return nil, err
+		}
+
+		return kubeConfig.GetConfig(), nil
+	} else {
+		ca, err := c.GetCert(fi.CertificateIDCA)
+		if err != nil {
+			return nil, err
+		}
+
+		cert, err := c.GetCert(name)
+		if err != nil {
+			return nil, err
+		}
+
+		key, err := c.GetPrivateKey(name)
+		if err != nil {
+			return nil, err
+		}
+
+		kubeConfig := &nodetasks.KubeConfig{
+			Name: name,
+			Cert: fi.NewBytesResource(cert),
+			Key:  fi.NewBytesResource(key),
+			CA:   fi.NewBytesResource(ca),
+		}
+		if c.IsMaster {
+			// @note: use https even for local connections, so we can turn off the insecure port
+			// This code path is used for the kubelet cert in Kubernetes 1.18 and earlier.
+			kubeConfig.ServerURL = "https://127.0.0.1"
+		} else {
+			kubeConfig.ServerURL = "https://" + c.Cluster.Spec.MasterInternalName
+		}
+
+		err = kubeConfig.Run(nil)
+		if err != nil {
+			return nil, err
+		}
+
+		config, err := fi.ResourceAsBytes(kubeConfig.GetConfig())
+		if err != nil {
+			return nil, err
+		}
+
+		return fi.NewBytesResource(config), nil
 	}
-
-	return string(yaml), nil
 }
 
 // IsKubernetesGTE checks if the version is greater-than-or-equal
@@ -285,6 +312,14 @@ func (c *NodeupModelContext) IsKubernetesGTE(version string) bool {
 		klog.Fatalf("kubernetesVersion not set (%s); Init not called", c.kubernetesVersion)
 	}
 	return util.IsKubernetesGTE(version, c.kubernetesVersion)
+}
+
+// IsKubernetesLT checks if the version is less-than
+func (c *NodeupModelContext) IsKubernetesLT(version string) bool {
+	if c.kubernetesVersion.Major == 0 {
+		klog.Fatalf("kubernetesVersion not set (%s); Init not called", c.kubernetesVersion)
+	}
+	return !c.IsKubernetesGTE(version)
 }
 
 // UseEtcdManager checks if the etcd cluster has etcd-manager enabled
@@ -313,11 +348,7 @@ func (c *NodeupModelContext) UseEtcdTLS() bool {
 // UseVolumeMounts is used to check if we have volume mounts enabled as we need to
 // insert requires and afters in various places
 func (c *NodeupModelContext) UseVolumeMounts() bool {
-	if c.InstanceGroup != nil {
-		return len(c.InstanceGroup.Spec.VolumeMounts) > 0
-	}
-
-	return false
+	return len(c.NodeupConfig.VolumeMounts) > 0
 }
 
 // UseEtcdTLSAuth checks the peer-auth is set in both cluster
@@ -337,14 +368,9 @@ func (c *NodeupModelContext) UseEtcdTLSAuth() bool {
 	return false
 }
 
-// UsesCNI checks if the cluster has CNI configured
-func (c *NodeupModelContext) UsesCNI() bool {
-	networking := c.Cluster.Spec.Networking
-	if networking == nil || networking.Classic != nil {
-		return false
-	}
-
-	return true
+// UseKopsControllerForNodeBootstrap checks if nodeup should use kops-controller to bootstrap.
+func (c *NodeupModelContext) UseKopsControllerForNodeBootstrap() bool {
+	return model.UseKopsControllerForNodeBootstrap(c.Cluster)
 }
 
 // UseNodeAuthorization checks if have a node authorization policy
@@ -363,11 +389,8 @@ func (c *NodeupModelContext) UseNodeAuthorizer() bool {
 
 // UsesSecondaryIP checks if the CNI in use attaches secondary interfaces to the host.
 func (c *NodeupModelContext) UsesSecondaryIP() bool {
-	if (c.Cluster.Spec.Networking.CNI != nil && c.Cluster.Spec.Networking.CNI.UsesSecondaryIP) || c.Cluster.Spec.Networking.AmazonVPC != nil || c.Cluster.Spec.Networking.LyftVPC != nil {
-		return true
-	}
-
-	return false
+	return (c.Cluster.Spec.Networking.CNI != nil && c.Cluster.Spec.Networking.CNI.UsesSecondaryIP) || c.Cluster.Spec.Networking.AmazonVPC != nil || c.Cluster.Spec.Networking.LyftVPC != nil ||
+		(c.Cluster.Spec.Networking.Cilium != nil && c.Cluster.Spec.Networking.Cilium.Ipam == kops.CiliumIpamEni)
 }
 
 // UseBootstrapTokens checks if we are using bootstrap tokens
@@ -379,59 +402,37 @@ func (c *NodeupModelContext) UseBootstrapTokens() bool {
 	return c.Cluster.Spec.Kubelet != nil && c.Cluster.Spec.Kubelet.BootstrapKubeconfig != ""
 }
 
-// UseSecureKubelet checks if the kubelet api should be protected by a client certificate. Note: the settings are
-// in one of three section, master specific kubelet, cluster wide kubelet or the InstanceGroup. Though arguably is
-// doesn't make much sense to unset this on a per InstanceGroup level, but hey :)
+// UseSecureKubelet checks if the kubelet api should be protected by a client certificate.
 func (c *NodeupModelContext) UseSecureKubelet() bool {
-	cluster := &c.Cluster.Spec // just to shorten the typing
-	group := &c.InstanceGroup.Spec
-
-	// @check on the InstanceGroup itself
-	if group.Kubelet != nil && group.Kubelet.AnonymousAuth != nil && *group.Kubelet.AnonymousAuth == false {
-		return true
-	}
-
-	// @check if we have anything specific to master kubelet
-	if c.IsMaster {
-		if cluster.MasterKubelet != nil && cluster.MasterKubelet.AnonymousAuth != nil && *cluster.MasterKubelet.AnonymousAuth == false {
-			return true
-		}
-	}
-
-	// @check the default settings for master and kubelet
-	if cluster.Kubelet != nil && cluster.Kubelet.AnonymousAuth != nil && *cluster.Kubelet.AnonymousAuth == false {
-		return true
-	}
-
-	return false
+	return c.NodeupConfig.KubeletConfig.AnonymousAuth != nil && !*c.NodeupConfig.KubeletConfig.AnonymousAuth
 }
 
 // KubectlPath returns distro based path for kubectl
 func (c *NodeupModelContext) KubectlPath() string {
 	kubeletCommand := "/usr/local/bin"
-	if c.Distribution == distros.DistributionCoreOS {
+	if c.Distribution == distributions.DistributionFlatcar {
 		kubeletCommand = "/opt/bin"
 	}
-	if c.Distribution == distros.DistributionContainerOS {
+	if c.Distribution == distributions.DistributionContainerOS {
 		kubeletCommand = "/home/kubernetes/bin"
 	}
 	return kubeletCommand
 }
 
-// BuildCertificatePairTask creates the tasks to pull down the certificate and private key
-func (c *NodeupModelContext) BuildCertificatePairTask(ctx *fi.ModelBuilderContext, key, path, filename string) error {
+// BuildCertificatePairTask creates the tasks to create the certificate and private key files.
+func (c *NodeupModelContext) BuildCertificatePairTask(ctx *fi.ModelBuilderContext, key, path, filename string, owner *string) error {
 	certificateName := filepath.Join(path, filename+".pem")
 	keyName := filepath.Join(path, filename+"-key.pem")
 
-	if err := c.BuildCertificateTask(ctx, key, certificateName); err != nil {
+	if err := c.BuildCertificateTask(ctx, key, certificateName, owner); err != nil {
 		return err
 	}
 
-	return c.BuildPrivateKeyTask(ctx, key, keyName)
+	return c.BuildPrivateKeyTask(ctx, key, keyName, owner)
 }
 
-// BuildCertificateTask is responsible for build a certificate request task
-func (c *NodeupModelContext) BuildCertificateTask(ctx *fi.ModelBuilderContext, name, filename string) error {
+// BuildCertificateTask builds a task to create a certificate file.
+func (c *NodeupModelContext) BuildCertificateTask(ctx *fi.ModelBuilderContext, name, filename string, owner *string) error {
 	cert, err := c.KeyStore.FindCert(name)
 	if err != nil {
 		return err
@@ -445,7 +446,6 @@ func (c *NodeupModelContext) BuildCertificateTask(ctx *fi.ModelBuilderContext, n
 	if err != nil {
 		return err
 	}
-
 	p := filename
 	if !filepath.IsAbs(p) {
 		p = filepath.Join(c.PathSrvKubernetes(), filename)
@@ -456,13 +456,14 @@ func (c *NodeupModelContext) BuildCertificateTask(ctx *fi.ModelBuilderContext, n
 		Contents: fi.NewStringResource(serialized),
 		Type:     nodetasks.FileType_File,
 		Mode:     s("0600"),
+		Owner:    owner,
 	})
 
 	return nil
 }
 
-// BuildPrivateKeyTask is responsible for build a certificate request task
-func (c *NodeupModelContext) BuildPrivateKeyTask(ctx *fi.ModelBuilderContext, name, filename string) error {
+// BuildPrivateKeyTask builds a task to create a private key file.
+func (c *NodeupModelContext) BuildPrivateKeyTask(ctx *fi.ModelBuilderContext, name, filename string, owner *string) error {
 	cert, err := c.KeyStore.FindPrivateKey(name)
 	if err != nil {
 		return err
@@ -487,6 +488,7 @@ func (c *NodeupModelContext) BuildPrivateKeyTask(ctx *fi.ModelBuilderContext, na
 		Contents: fi.NewStringResource(serialized),
 		Type:     nodetasks.FileType_File,
 		Mode:     s("0600"),
+		Owner:    owner,
 	})
 
 	return nil
@@ -529,49 +531,117 @@ func EvaluateHostnameOverride(hostnameOverride string) (string, error) {
 		return hostnameOverride, nil
 	}
 
-	// We recognize @aws as meaning "the local-hostname from the aws metadata service"
-	vBytes, err := vfs.Context.ReadFile("metadata://aws/meta-data/local-hostname")
+	// We recognize @aws as meaning "the private DNS name from AWS", to generate this we need to get a few pieces of information
+	azBytes, err := vfs.Context.ReadFile("metadata://aws/meta-data/placement/availability-zone")
 	if err != nil {
-		return "", fmt.Errorf("error reading local hostname from AWS metadata: %v", err)
+		return "", fmt.Errorf("error reading availability zone from AWS metadata: %v", err)
 	}
 
-	// The local-hostname gets it's hostname from the AWS DHCP Option Set, which
-	// may provide multiple hostnames separated by spaces. For now just choose
-	// the first one as the hostname.
-	domains := strings.Fields(string(vBytes))
-	if len(domains) == 0 {
-		klog.Warningf("Local hostname from AWS metadata service was empty")
-		return "", nil
+	instanceIDBytes, err := vfs.Context.ReadFile("metadata://aws/meta-data/instance-id")
+	if err != nil {
+		return "", fmt.Errorf("error reading instance-id from AWS metadata: %v", err)
 	}
-	domain := domains[0]
+	instanceID := string(instanceIDBytes)
 
-	klog.Infof("Using hostname from AWS metadata service: %s", domain)
+	config := aws.NewConfig()
+	config = config.WithCredentialsChainVerboseErrors(true)
 
-	return domain, nil
+	s, err := session.NewSession(config)
+	if err != nil {
+		return "", fmt.Errorf("error starting new AWS session: %v", err)
+	}
+
+	svc := ec2.New(s, config.WithRegion(string(azBytes[:len(azBytes)-1])))
+
+	result, err := svc.DescribeInstances(&ec2.DescribeInstancesInput{
+		InstanceIds: []*string{&instanceID},
+	})
+	if err != nil {
+		return "", fmt.Errorf("error describing instances: %v", err)
+	}
+
+	if len(result.Reservations) != 1 {
+		return "", fmt.Errorf("too many reservations returned for the single instance-id")
+	}
+
+	if len(result.Reservations[0].Instances) != 1 {
+		return "", fmt.Errorf("too many instances returned for the single instance-id")
+	}
+	return *(result.Reservations[0].Instances[0].PrivateDnsName), nil
 }
 
-// FindCert is a helper method to retrieving a certificate from the store
-func (c *NodeupModelContext) FindCert(name string) ([]byte, error) {
+// GetCert is a helper method to retrieve a certificate from the store
+func (c *NodeupModelContext) GetCert(name string) ([]byte, error) {
 	cert, err := c.KeyStore.FindCert(name)
 	if err != nil {
 		return []byte{}, fmt.Errorf("error fetching certificate: %v from keystore: %v", name, err)
 	}
 	if cert == nil {
-		return []byte{}, fmt.Errorf("unable to found certificate: %s", name)
+		return []byte{}, fmt.Errorf("unable to find certificate: %s", name)
 	}
 
 	return cert.AsBytes()
 }
 
-// FindPrivateKey is a helper method to retrieving a private key from the store
-func (c *NodeupModelContext) FindPrivateKey(name string) ([]byte, error) {
+// GetPrivateKey is a helper method to retrieve a private key from the store
+func (c *NodeupModelContext) GetPrivateKey(name string) ([]byte, error) {
 	key, err := c.KeyStore.FindPrivateKey(name)
 	if err != nil {
 		return []byte{}, fmt.Errorf("error fetching private key: %v from keystore: %v", name, err)
 	}
 	if key == nil {
-		return []byte{}, fmt.Errorf("unable to found private key: %s", name)
+		return []byte{}, fmt.Errorf("unable to find private key: %s", name)
 	}
 
 	return key.AsBytes()
+}
+
+func (b *NodeupModelContext) AddCNIBinAssets(c *fi.ModelBuilderContext, assetNames []string) error {
+	for _, assetName := range assetNames {
+		if err := b.addCNIBinAsset(c, assetName); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func (b *NodeupModelContext) addCNIBinAsset(c *fi.ModelBuilderContext, assetName string) error {
+	assetPath := ""
+	asset, err := b.Assets.Find(assetName, assetPath)
+	if err != nil {
+		return fmt.Errorf("error trying to locate asset %q: %v", assetName, err)
+	}
+	if asset == nil {
+		return fmt.Errorf("unable to locate asset %q", assetName)
+	}
+
+	c.AddTask(&nodetasks.File{
+		Path:     filepath.Join(b.CNIBinDir(), assetName),
+		Contents: asset,
+		Type:     nodetasks.FileType_File,
+		Mode:     fi.String("0755"),
+	})
+
+	return nil
+}
+
+// UsesCNI checks if the cluster has CNI configured
+func (c *NodeupModelContext) UsesCNI() bool {
+	networking := c.Cluster.Spec.Networking
+	if networking == nil || networking.Classic != nil {
+		return false
+	}
+
+	return true
+}
+
+// CNIBinDir returns the path for the CNI binaries
+func (c *NodeupModelContext) CNIBinDir() string {
+	// We used to map this on a per-distro basis, but this can require CNI manifests to be distro aware
+	return "/opt/cni/bin/"
+}
+
+// CNIConfDir returns the CNI directory
+func (c *NodeupModelContext) CNIConfDir() string {
+	return "/etc/cni/net.d/"
 }

@@ -1,5 +1,5 @@
 /*
-Copyright 2016 The Kubernetes Authors.
+Copyright 2019 The Kubernetes Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -21,8 +21,10 @@ import (
 	"net"
 	"strings"
 
-	"k8s.io/klog"
+	"k8s.io/klog/v2"
 	"k8s.io/kops/pkg/apis/kops"
+	"k8s.io/kops/upup/pkg/fi"
+	"k8s.io/kops/upup/pkg/fi/cloudup/gce"
 	"k8s.io/kops/util/pkg/vfs"
 
 	kopsversion "k8s.io/kops"
@@ -37,16 +39,21 @@ import (
 // any time Run() is called in apply_cluster.go we will reach this function.
 // Please do all after-market logic here.
 //
-func PerformAssignments(c *kops.Cluster) error {
-	cloud, err := BuildCloud(c)
-	if err != nil {
-		return err
-	}
-
+func PerformAssignments(c *kops.Cluster, cloud fi.Cloud) error {
 	// Topology support
 	// TODO Kris: Unsure if this needs to be here, or if the API conversion code will handle it
 	if c.Spec.Topology == nil {
 		c.Spec.Topology = &kops.TopologySpec{Masters: kops.TopologyPublic, Nodes: kops.TopologyPublic}
+	}
+
+	if cloud == nil {
+		return fmt.Errorf("cloud cannot be nil")
+	}
+
+	if cloud.ProviderID() == kops.CloudProviderGCE {
+		if err := gce.PerformNetworkAssignments(c, cloud); err != nil {
+			return err
+		}
 	}
 
 	// Currently only AWS uses NetworkCIDRs
@@ -62,7 +69,7 @@ func PerformAssignments(c *kops.Cluster) error {
 			}
 			c.Spec.NetworkCIDR = vpcInfo.CIDR
 			if c.Spec.NetworkCIDR == "" {
-				return fmt.Errorf("Unable to infer NetworkCIDR from VPC ID, please specify --network-cidr")
+				return fmt.Errorf("unable to infer NetworkCIDR from VPC ID, please specify --network-cidr")
 			}
 		} else {
 			if cloud.ProviderID() == kops.CloudProviderAWS {
@@ -80,7 +87,11 @@ func PerformAssignments(c *kops.Cluster) error {
 	}
 
 	if c.Spec.NonMasqueradeCIDR == "" {
-		c.Spec.NonMasqueradeCIDR = "100.64.0.0/10"
+		if c.Spec.Networking != nil && c.Spec.Networking.GCE != nil {
+			// Don't set NonMasqueradeCIDR
+		} else {
+			c.Spec.NonMasqueradeCIDR = "100.64.0.0/10"
+		}
 	}
 
 	// TODO: Unclear this should be here - it isn't too hard to change
@@ -92,16 +103,17 @@ func PerformAssignments(c *kops.Cluster) error {
 	pd := cloud.ProviderID()
 	if pd == kops.CloudProviderAWS || pd == kops.CloudProviderOpenstack || pd == kops.CloudProviderALI {
 		// TODO: Use vpcInfo
-		err = assignCIDRsToSubnets(c)
+		err := assignCIDRsToSubnets(c, cloud)
 		if err != nil {
 			return err
 		}
 	}
 
-	c.Spec.EgressProxy, err = assignProxy(c)
+	proxy, err := assignProxy(c)
 	if err != nil {
 		return err
 	}
+	c.Spec.EgressProxy = proxy
 
 	return ensureKubernetesVersion(c)
 }

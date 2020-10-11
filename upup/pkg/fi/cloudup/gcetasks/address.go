@@ -1,5 +1,5 @@
 /*
-Copyright 2016 The Kubernetes Authors.
+Copyright 2019 The Kubernetes Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -19,19 +19,26 @@ package gcetasks
 import (
 	"fmt"
 
-	compute "google.golang.org/api/compute/v0.beta"
-	"k8s.io/klog"
+	compute "google.golang.org/api/compute/v1"
+	"k8s.io/klog/v2"
 	"k8s.io/kops/upup/pkg/fi"
 	"k8s.io/kops/upup/pkg/fi/cloudup/gce"
 	"k8s.io/kops/upup/pkg/fi/cloudup/terraform"
 )
 
-//go:generate fitask -type=Address
+// +kops:fitask
 type Address struct {
 	Name      *string
 	Lifecycle *fi.Lifecycle
 
-	IPAddress *string
+	IPAddress    *string
+	ForAPIServer bool
+}
+
+var _ fi.CompareWithID = &ForwardingRule{}
+
+func (e *Address) CompareWithID() *string {
+	return e.Name
 }
 
 func (e *Address) Find(c *fi.Context) (*Address, error) {
@@ -40,6 +47,10 @@ func (e *Address) Find(c *fi.Context) (*Address, error) {
 		if e.IPAddress == nil {
 			e.IPAddress = actual.IPAddress
 		}
+
+		// Ignore system fields
+		actual.Lifecycle = e.Lifecycle
+		actual.ForAPIServer = e.ForAPIServer
 	}
 	return actual, err
 }
@@ -83,6 +94,10 @@ func (e *Address) find(cloud gce.GCECloud) (*Address, error) {
 }
 
 var _ fi.HasAddress = &Address{}
+
+func (e *Address) IsForAPIServer() bool {
+	return e.ForAPIServer
+}
 
 func (e *Address) FindIPAddress(context *fi.Context) (*string, error) {
 	actual, err := e.find(context.Cloud.(gce.GCECloud))
@@ -131,14 +146,14 @@ func (_ *Address) RenderGCE(t *gce.GCEAPITarget, a, e, changes *Address) error {
 			return fmt.Errorf("error waiting for IP Address: %v", err)
 		}
 	} else {
-		return fmt.Errorf("Cannot apply changes to IP Address: %v", changes)
+		return fmt.Errorf("cannot apply changes to IP Address: %v", changes)
 	}
 
 	return nil
 }
 
 type terraformAddress struct {
-	Name *string `json:"name,omitempty"`
+	Name *string `json:"name,omitempty" cty:"name"`
 }
 
 func (_ *Address) RenderTerraform(t *terraform.TerraformTarget, a, e, changes *Address) error {

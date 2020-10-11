@@ -8,9 +8,9 @@ import (
 	"github.com/spotinst/spotinst-sdk-go/spotinst/session"
 )
 
-// Service provides the API operation methods for making requests to
-// endpoints of the Spotinst API. See this package's package overview docs
-// for details on the service.
+// Service provides the API operation methods for making requests to endpoints
+// of the Spotinst API. See this package's package overview docs for details on
+// the service.
 type Service interface {
 	List(context.Context, *ListGroupsInput) (*ListGroupsOutput, error)
 	Create(context.Context, *CreateGroupInput) (*CreateGroupOutput, error)
@@ -19,7 +19,19 @@ type Service interface {
 	Delete(context.Context, *DeleteGroupInput) (*DeleteGroupOutput, error)
 	Status(context.Context, *StatusGroupInput) (*StatusGroupOutput, error)
 	Detach(context.Context, *DetachGroupInput) (*DetachGroupOutput, error)
+	Scale(context.Context, *ScaleGroupInput) (*ScaleGroupOutput, error)
+	CreateNodeSignal(context.Context, *NodeSignalInput) (*NodeSignalOutput, error)
+
 	Roll(context.Context, *RollGroupInput) (*RollGroupOutput, error)
+	GetRollStatus(context.Context, *RollStatusInput) (*RollStatusOutput, error)
+	ListRollStatus(context.Context, *ListRollStatusInput) (*ListRollStatusOutput, error)
+	StopRoll(context.Context, *StopRollInput) (*StopRollOutput, error)
+
+	ListTasks(context.Context, *ListTasksInput) (*ListTasksOutput, error)
+	CreateTask(context.Context, *CreateTaskInput) (*CreateTaskOutput, error)
+	ReadTask(context.Context, *ReadTaskInput) (*ReadTaskOutput, error)
+	UpdateTask(context.Context, *UpdateTaskInput) (*UpdateTaskOutput, error)
+	DeleteTask(context.Context, *DeleteTaskInput) (*DeleteTaskOutput, error)
 }
 
 type ServiceOp struct {

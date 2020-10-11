@@ -1,5 +1,5 @@
 /*
-Copyright 2016 The Kubernetes Authors.
+Copyright 2019 The Kubernetes Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -24,7 +24,7 @@ import (
 	"k8s.io/kops/upup/pkg/fi"
 	"k8s.io/kops/upup/pkg/fi/cloudup/awstasks"
 
-	"k8s.io/klog"
+	"k8s.io/klog/v2"
 )
 
 type Protocol int
@@ -244,25 +244,18 @@ func (b *FirewallModelBuilder) applyNodeToMasterBlockSpecificPorts(c *fi.ModelBu
 	udpRanges := []portRange{{From: 1, To: 65535}}
 	protocols := []Protocol{}
 
+	if b.Cluster.Spec.Networking.Cilium != nil && b.Cluster.Spec.Networking.Cilium.EtcdManaged {
+		// Block the etcd peer port
+		tcpBlocked[2382] = true
+	}
+
 	if b.Cluster.Spec.Networking.Calico != nil {
-		// Calico needs to access etcd
-		// TODO: Remove, replace with etcd in calico manifest
-		klog.Warningf("Opening etcd port on masters for access from the nodes, for calico.  This is unsafe in untrusted environments.")
-		tcpBlocked[4001] = false
-		protocols = append(protocols, ProtocolIPIP)
-	}
-
-	if b.Cluster.Spec.Networking.Romana != nil {
-		// Romana needs to access etcd
-		klog.Warningf("Opening etcd port on masters for access from the nodes, for romana.  This is unsafe in untrusted environments.")
-		tcpBlocked[4001] = false
-		protocols = append(protocols, ProtocolIPIP)
-	}
-
-	if b.Cluster.Spec.Networking.Cilium != nil {
-		// Cilium needs to access etcd
-		klog.Warningf("Opening etcd port on masters for access from the nodes, for Cilium.  This is unsafe in untrusted environments.")
-		tcpBlocked[4001] = false
+		if b.IsKubernetesLT("1.12") {
+			// Calico needs to access etcd
+			// TODO: Remove, replace with etcd in calico manifest
+			klog.Warningf("Opening etcd port on masters for access from the nodes, for calico.  This is unsafe in untrusted environments.")
+			tcpBlocked[4001] = false
+		}
 		protocols = append(protocols, ProtocolIPIP)
 	}
 

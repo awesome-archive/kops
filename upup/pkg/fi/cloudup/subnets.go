@@ -1,5 +1,5 @@
 /*
-Copyright 2016 The Kubernetes Authors.
+Copyright 2019 The Kubernetes Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -21,7 +21,7 @@ import (
 	"net"
 	"sort"
 
-	"k8s.io/klog"
+	"k8s.io/klog/v2"
 	"k8s.io/kops/pkg/apis/kops"
 	"k8s.io/kops/pkg/util/subnet"
 	"k8s.io/kops/upup/pkg/fi"
@@ -41,7 +41,7 @@ func (a ByZone) Less(i, j int) bool {
 	return a[i].Zone < a[j].Zone
 }
 
-func assignCIDRsToSubnets(c *kops.Cluster) error {
+func assignCIDRsToSubnets(c *kops.Cluster, cloud fi.Cloud) error {
 	// TODO: We probably could query for the existing subnets & allocate appropriately
 	// for now we'll require users to set CIDRs themselves
 
@@ -51,10 +51,6 @@ func assignCIDRsToSubnets(c *kops.Cluster) error {
 	}
 
 	if c.Spec.NetworkID != "" {
-		cloud, err := BuildCloud(c)
-		if err != nil {
-			return err
-		}
 
 		vpcInfo, err := cloud.FindVPCInfo(c.Spec.NetworkID)
 		if err != nil {

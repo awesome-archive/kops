@@ -3,11 +3,11 @@
 
 ## kops delete
 
-Delete clusters,instancegroups, or secrets.
+Delete clusters,instancegroups, instances, or secrets.
 
 ### Synopsis
 
-Delete Kubernetes clusters, instancegroups, and secrets, or a combination of the before mentioned.
+Delete Kubernetes clusters, instancegroups, instances, and secrets, or a combination of the before mentioned.
 
 ```
 kops delete -f FILENAME [--yes] [flags]
@@ -16,6 +16,9 @@ kops delete -f FILENAME [--yes] [flags]
 ### Examples
 
 ```
+  # Delete an instance
+  kops delete instance i-0a5ed581b862d3425
+  
   # Delete a cluster using a manifest file
   kops delete -f my-cluster.yaml
   
@@ -41,6 +44,7 @@ kops delete -f FILENAME [--yes] [flags]
 ### Options inherited from parent commands
 
 ```
+      --add_dir_header                   If true, adds the file directory to the header of the log messages
       --alsologtostderr                  log to standard error as well as files
       --config string                    yaml config file (default is $HOME/.kops.yaml)
       --log_backtrace_at traceLocation   when logging hits line file:N, emit a stack trace (default :0)
@@ -50,7 +54,7 @@ kops delete -f FILENAME [--yes] [flags]
       --logtostderr                      log to standard error instead of files (default true)
       --name string                      Name of cluster. Overrides KOPS_CLUSTER_NAME environment variable
       --skip_headers                     If true, avoid header prefixes in the log messages
-      --skip_log_headers                 If true, avoid headers when openning log files
+      --skip_log_headers                 If true, avoid headers when opening log files
       --state string                     Location of state storage (kops 'config' file). Overrides KOPS_STATE_STORE environment variable
       --stderrthreshold severity         logs at or above this threshold go to stderr (default 2)
   -v, --v Level                          number for the log level verbosity
@@ -61,6 +65,7 @@ kops delete -f FILENAME [--yes] [flags]
 
 * [kops](kops.md)	 - kops is Kubernetes ops.
 * [kops delete cluster](kops_delete_cluster.md)	 - Delete a cluster.
+* [kops delete instance](kops_delete_instance.md)	 - Delete an instance
 * [kops delete instancegroup](kops_delete_instancegroup.md)	 - Delete instancegroup
 * [kops delete secret](kops_delete_secret.md)	 - Delete a secret
 

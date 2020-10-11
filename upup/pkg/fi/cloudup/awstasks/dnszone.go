@@ -1,5 +1,5 @@
 /*
-Copyright 2016 The Kubernetes Authors.
+Copyright 2019 The Kubernetes Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -26,7 +26,7 @@ import (
 
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/route53"
-	"k8s.io/klog"
+	"k8s.io/klog/v2"
 	"k8s.io/kops/upup/pkg/fi"
 	"k8s.io/kops/upup/pkg/fi/cloudup/awsup"
 	"k8s.io/kops/upup/pkg/fi/cloudup/cloudformation"
@@ -34,7 +34,7 @@ import (
 )
 
 // DNSZone is a zone object in a dns provider
-//go:generate fitask -type=DNSZone
+// +kops:fitask
 type DNSZone struct {
 	Name      *string
 	Lifecycle *fi.Lifecycle
@@ -226,9 +226,9 @@ func (_ *DNSZone) RenderAWS(t *awsup.AWSAPITarget, a, e, changes *DNSZone) error
 }
 
 type terraformRoute53ZoneAssociation struct {
-	ZoneID    *terraform.Literal   `json:"zone_id"`
-	VPCID     *terraform.Literal   `json:"vpc_id"`
-	Lifecycle *terraform.Lifecycle `json:"lifecycle,omitempty"`
+	ZoneID    *terraform.Literal   `json:"zone_id" cty:"zone_id"`
+	VPCID     *terraform.Literal   `json:"vpc_id" cty:"vpc_id"`
+	Lifecycle *terraform.Lifecycle `json:"lifecycle,omitempty" cty:"lifecycle"`
 }
 
 func (_ *DNSZone) RenderTerraform(t *terraform.TerraformTarget, a, e, changes *DNSZone) error {

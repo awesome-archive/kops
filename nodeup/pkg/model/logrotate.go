@@ -1,5 +1,5 @@
 /*
-Copyright 2016 The Kubernetes Authors.
+Copyright 2019 The Kubernetes Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -20,13 +20,13 @@ import (
 	"fmt"
 	"strings"
 
-	"k8s.io/kops/nodeup/pkg/distros"
 	"k8s.io/kops/pkg/apis/kops/util"
 	"k8s.io/kops/pkg/systemd"
 	"k8s.io/kops/upup/pkg/fi"
 	"k8s.io/kops/upup/pkg/fi/nodeup/nodetasks"
+	"k8s.io/kops/util/pkg/distributions"
 
-	"k8s.io/klog"
+	"k8s.io/klog/v2"
 )
 
 // LogrotateBuilder installs logrotate.d and configures log rotation for kubernetes logs
@@ -40,11 +40,11 @@ var _ fi.ModelBuilder = &LogrotateBuilder{}
 func (b *LogrotateBuilder) Build(c *fi.ModelBuilderContext) error {
 
 	switch b.Distribution {
-	case distros.DistributionContainerOS:
+	case distributions.DistributionContainerOS:
 		klog.Infof("Detected ContainerOS; won't install logrotate")
 		return nil
-	case distros.DistributionCoreOS:
-		klog.Infof("Detected CoreOS; won't install logrotate")
+	case distributions.DistributionFlatcar:
+		klog.Infof("Detected Flatcar; won't install logrotate")
 	default:
 		c.AddTask(&nodetasks.Package{Name: "logrotate"})
 	}
@@ -54,11 +54,6 @@ func (b *LogrotateBuilder) Build(c *fi.ModelBuilderContext) error {
 		return fmt.Errorf("unable to parse KubernetesVersion %q", b.Cluster.Spec.KubernetesVersion)
 	}
 
-	if k8sVersion.Major == 1 && k8sVersion.Minor < 6 {
-		// In version 1.6, we move log rotation to docker, but prior to that we need a logrotate rule
-		b.addLogRotate(c, "docker-containers", "/var/lib/docker/containers/*/*-json.log", logRotateOptions{MaxSize: "10M"})
-	}
-
 	b.addLogRotate(c, "docker", "/var/log/docker.log", logRotateOptions{})
 	b.addLogRotate(c, "kube-addons", "/var/log/kube-addons.log", logRotateOptions{})
 	b.addLogRotate(c, "kube-apiserver", "/var/log/kube-apiserver.log", logRotateOptions{})
@@ -66,6 +61,8 @@ func (b *LogrotateBuilder) Build(c *fi.ModelBuilderContext) error {
 	b.addLogRotate(c, "kube-proxy", "/var/log/kube-proxy.log", logRotateOptions{})
 	b.addLogRotate(c, "kube-scheduler", "/var/log/kube-scheduler.log", logRotateOptions{})
 	b.addLogRotate(c, "kubelet", "/var/log/kubelet.log", logRotateOptions{})
+	b.addLogRotate(c, "etcd", "/var/log/etcd.log", logRotateOptions{})
+	b.addLogRotate(c, "etcd-events", "/var/log/etcd-events.log", logRotateOptions{})
 
 	if err := b.addLogrotateService(c); err != nil {
 		return err
@@ -93,7 +90,7 @@ func (b *LogrotateBuilder) Build(c *fi.ModelBuilderContext) error {
 // addLogrotateService creates a logrotate systemd task to act as target for the timer, if one is needed
 func (b *LogrotateBuilder) addLogrotateService(c *fi.ModelBuilderContext) error {
 	switch b.Distribution {
-	case distros.DistributionCoreOS, distros.DistributionContainerOS:
+	case distributions.DistributionFlatcar, distributions.DistributionContainerOS:
 		// logrotate service already exists
 		return nil
 	}
@@ -122,9 +119,9 @@ func (b *LogrotateBuilder) addLogRotate(c *fi.ModelBuilderContext, name, path st
 		options.MaxSize = "100M"
 	}
 
-	// CoreOS sets "dateext" options, and maxsize-based rotation will fail if
+	// Flatcar sets "dateext" options, and maxsize-based rotation will fail if
 	// the file has been previously rotated on the same calendar date.
-	if b.Distribution == distros.DistributionCoreOS {
+	if b.Distribution == distributions.DistributionFlatcar {
 		options.DateFormat = "-%Y%m%d-%s"
 	}
 

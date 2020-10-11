@@ -1,5 +1,5 @@
 /*
-Copyright 2016 The Kubernetes Authors.
+Copyright 2019 The Kubernetes Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -19,15 +19,15 @@ package kutil
 import (
 	"bytes"
 	"compress/gzip"
+	"context"
 	"encoding/base64"
 	"fmt"
 	"io"
-	"strconv"
 	"strings"
 
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/ec2"
-	"k8s.io/klog"
+	"k8s.io/klog/v2"
 	"k8s.io/kops/pkg/apis/kops"
 	"k8s.io/kops/pkg/apis/kops/registry"
 	"k8s.io/kops/pkg/client/simple"
@@ -46,7 +46,7 @@ type ImportCluster struct {
 	Clientset simple.Clientset
 }
 
-func (x *ImportCluster) ImportAWSCluster() error {
+func (x *ImportCluster) ImportAWSCluster(ctx context.Context) error {
 	awsCloud := x.Cloud.(awsup.AWSCloud)
 	clusterName := x.ClusterName
 
@@ -348,21 +348,21 @@ func (x *ImportCluster) ImportAWSCluster() error {
 			nodeGroup.Spec.MachineType = ""
 		}
 	}
-	if conf.Version == "1.2" {
-		// If users went with defaults on some things, clear them out so they get the new defaults
-		//if clusterConfig.AdmissionControl == "NamespaceLifecycle,LimitRanger,ServiceAccount,PersistentVolumeLabel,ResourceQuota" {
-		//	// More admission controllers in 1.2
-		//	clusterConfig.AdmissionControl = ""
-		//}
-	}
+	// if conf.Version == "1.2" {
+	// If users went with defaults on some things, clear them out so they get the new defaults
+	//if clusterConfig.AdmissionControl == "NamespaceLifecycle,LimitRanger,ServiceAccount,PersistentVolumeLabel,ResourceQuota" {
+	//	// More admission controllers in 1.2
+	//	clusterConfig.AdmissionControl = ""
+	//}
+	// }
 
 	for _, etcdClusterName := range []string{"main", "events"} {
-		etcdCluster := &kops.EtcdClusterSpec{
+		etcdCluster := kops.EtcdClusterSpec{
 			Name: etcdClusterName,
 		}
 
 		for _, ig := range masterInstanceGroups {
-			member := &kops.EtcdMemberSpec{
+			member := kops.EtcdMemberSpec{
 				InstanceGroup: fi.String(ig.ObjectMeta.Name),
 			}
 
@@ -424,7 +424,7 @@ func (x *ImportCluster) ImportAWSCluster() error {
 	if err != nil {
 		return err
 	}
-	err = keyStore.AddCert(fi.CertificateId_CA, caCert)
+	err = keyStore.AddCert(fi.CertificateIDCA, caCert)
 	if err != nil {
 		return err
 	}
@@ -481,14 +481,14 @@ func (x *ImportCluster) ImportAWSCluster() error {
 
 	var fullInstanceGroups []*kops.InstanceGroup
 	for _, ig := range instanceGroups {
-		full, err := cloudup.PopulateInstanceGroupSpec(cluster, ig, channel)
+		full, err := cloudup.PopulateInstanceGroupSpec(cluster, ig, awsCloud, channel)
 		if err != nil {
 			return err
 		}
 		fullInstanceGroups = append(fullInstanceGroups, full)
 	}
 
-	err = registry.CreateClusterConfig(x.Clientset, cluster, fullInstanceGroups)
+	err = registry.CreateClusterConfig(ctx, x.Clientset, cluster, fullInstanceGroups, nil)
 	if err != nil {
 		return err
 	}
@@ -507,18 +507,18 @@ func (x *ImportCluster) ImportAWSCluster() error {
 	return nil
 }
 
-func parseInt(s string) (int, error) {
-	if s == "" {
-		return 0, nil
-	}
+// func parseInt(s string) (int, error) {
+// 	if s == "" {
+// 		return 0, nil
+// 	}
 
-	n, err := strconv.ParseInt(s, 10, 64)
-	if err != nil {
-		return 0, err
-	}
+// 	n, err := strconv.ParseInt(s, 10, 64)
+// 	if err != nil {
+// 		return 0, err
+// 	}
 
-	return int(n), nil
-}
+// 	return int(n), nil
+// }
 
 //func writeConf(p string, k8s *cloudup.CloudConfig) error {
 //	jsonBytes, err := json.Marshal(k8s)
@@ -635,9 +635,7 @@ func findInstances(c awsup.AWSCloud) ([]*ec2.Instance, error) {
 
 	err := c.EC2().DescribeInstancesPages(request, func(p *ec2.DescribeInstancesOutput, lastPage bool) bool {
 		for _, reservation := range p.Reservations {
-			for _, instance := range reservation.Instances {
-				instances = append(instances, instance)
-			}
+			instances = append(instances, reservation.Instances...)
 		}
 		return true
 	})

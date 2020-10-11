@@ -1,5 +1,5 @@
 /*
-Copyright 2018 The Kubernetes Authors.
+Copyright 2019 The Kubernetes Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -21,18 +21,19 @@ import (
 
 	"github.com/gophercloud/gophercloud"
 	"github.com/gophercloud/gophercloud/openstack/networking/v2/subnets"
-	"k8s.io/klog"
+	"k8s.io/klog/v2"
 	"k8s.io/kops/upup/pkg/fi"
 	"k8s.io/kops/upup/pkg/fi/cloudup/openstack"
 )
 
-//go:generate fitask -type=Subnet
+// +kops:fitask
 type Subnet struct {
 	ID         *string
 	Name       *string
 	Network    *Network
 	CIDR       *string
 	DNSServers []*string
+	Tag        *string
 	Lifecycle  *fi.Lifecycle
 }
 
@@ -58,11 +59,19 @@ func NewSubnetTaskFromCloud(cloud openstack.OpenstackCloud, lifecycle *fi.Lifecy
 	if err != nil {
 		return nil, fmt.Errorf("NewSubnetTaskFromCloud: Failed to get network with ID %s: %v", subnet.NetworkID, err)
 	}
-	networkTask, err := NewNetworkTaskFromCloud(cloud, lifecycle, network)
+	networkTask, err := NewNetworkTaskFromCloud(cloud, lifecycle, network, find.Tag)
+	if err != nil {
+		return nil, fmt.Errorf("error creating network task from cloud: %v", err)
+	}
 
 	nameservers := make([]*string, len(subnet.DNSNameservers))
 	for i, ns := range subnet.DNSNameservers {
 		nameservers[i] = fi.String(ns)
+	}
+
+	tag := ""
+	if find != nil && fi.ArrayContains(subnet.Tags, fi.StringValue(find.Tag)) {
+		tag = fi.StringValue(find.Tag)
 	}
 
 	actual := &Subnet{
@@ -72,6 +81,7 @@ func NewSubnetTaskFromCloud(cloud openstack.OpenstackCloud, lifecycle *fi.Lifecy
 		CIDR:       fi.String(subnet.CIDR),
 		Lifecycle:  lifecycle,
 		DNSServers: nameservers,
+		Tag:        fi.String(tag),
 	}
 	if find != nil {
 		find.ID = actual.ID
@@ -105,7 +115,7 @@ func (s *Subnet) Run(context *fi.Context) error {
 	return fi.DefaultDeltaRunMethod(s, context)
 }
 
-func (_ *Subnet) CheckChanges(a, e, changes *Subnet) error {
+func (*Subnet) CheckChanges(a, e, changes *Subnet) error {
 	if a == nil {
 		if e.Name == nil {
 			return fi.RequiredField("Name")
@@ -120,9 +130,6 @@ func (_ *Subnet) CheckChanges(a, e, changes *Subnet) error {
 		if changes.Name != nil {
 			return fi.CannotChangeField("Name")
 		}
-		if changes.DNSServers != nil {
-			return fi.CannotChangeField("DNSServers")
-		}
 		if changes.Network != nil {
 			return fi.CannotChangeField("Network")
 		}
@@ -133,7 +140,7 @@ func (_ *Subnet) CheckChanges(a, e, changes *Subnet) error {
 	return nil
 }
 
-func (_ *Subnet) RenderOpenstack(t *openstack.OpenstackAPITarget, a, e, changes *Subnet) error {
+func (*Subnet) RenderOpenstack(t *openstack.OpenstackAPITarget, a, e, changes *Subnet) error {
 	if a == nil {
 		klog.V(2).Infof("Creating Subnet with name:%q", fi.StringValue(e.Name))
 
@@ -157,9 +164,37 @@ func (_ *Subnet) RenderOpenstack(t *openstack.OpenstackAPITarget, a, e, changes 
 			return fmt.Errorf("Error creating subnet: %v", err)
 		}
 
+		err = t.Cloud.AppendTag(openstack.ResourceTypeSubnet, v.ID, fi.StringValue(e.Tag))
+		if err != nil {
+			return fmt.Errorf("Error appending tag to subnet: %v", err)
+		}
+
 		e.ID = fi.String(v.ID)
 		klog.V(2).Infof("Creating a new Openstack subnet, id=%s", v.ID)
 		return nil
+	} else {
+		if changes.Tag != nil {
+			err := t.Cloud.AppendTag(openstack.ResourceTypeSubnet, fi.StringValue(a.ID), fi.StringValue(changes.Tag))
+			if err != nil {
+				return fmt.Errorf("error appending tag to subnet: %v", err)
+			}
+		}
+		client := t.Cloud.(openstack.OpenstackCloud).NetworkingClient()
+
+		opt := subnets.UpdateOpts{}
+
+		if changes.DNSServers != nil {
+			dnsNameSrv := make([]string, len(e.DNSServers))
+			for i, ns := range e.DNSServers {
+				dnsNameSrv[i] = fi.StringValue(ns)
+			}
+			opt.DNSNameservers = &dnsNameSrv
+		}
+		result := subnets.Update(client, fi.StringValue(a.ID), opt)
+		klog.Infof("Updated %v", opt)
+		if result.Err != nil {
+			return fmt.Errorf("error updating subnet %v: %v", a.ID, result.Err)
+		}
 	}
 	e.ID = a.ID
 	klog.V(2).Infof("Using an existing Openstack subnet, id=%s", fi.StringValue(e.ID))

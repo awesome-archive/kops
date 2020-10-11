@@ -29,21 +29,23 @@ type ListOptsBuilder interface {
 // sort by a particular listener attribute. SortDir sets the direction, and is
 // either `asc' or `desc'. Marker and Limit are used for pagination.
 type ListOpts struct {
-	ID                string `q:"id"`
-	Name              string `q:"name"`
-	AdminStateUp      *bool  `q:"admin_state_up"`
-	ProjectID         string `q:"project_id"`
-	LoadbalancerID    string `q:"loadbalancer_id"`
-	DefaultPoolID     string `q:"default_pool_id"`
-	Protocol          string `q:"protocol"`
-	ProtocolPort      int    `q:"protocol_port"`
-	ConnectionLimit   int    `q:"connection_limit"`
-	Limit             int    `q:"limit"`
-	Marker            string `q:"marker"`
-	SortKey           string `q:"sort_key"`
-	SortDir           string `q:"sort_dir"`
-	TimeoutClientData *int   `q:"timeout_client_data"`
-	TimeoutMemberData *int   `q:"timeout_member_data"`
+	ID                   string `q:"id"`
+	Name                 string `q:"name"`
+	AdminStateUp         *bool  `q:"admin_state_up"`
+	ProjectID            string `q:"project_id"`
+	LoadbalancerID       string `q:"loadbalancer_id"`
+	DefaultPoolID        string `q:"default_pool_id"`
+	Protocol             string `q:"protocol"`
+	ProtocolPort         int    `q:"protocol_port"`
+	ConnectionLimit      int    `q:"connection_limit"`
+	Limit                int    `q:"limit"`
+	Marker               string `q:"marker"`
+	SortKey              string `q:"sort_key"`
+	SortDir              string `q:"sort_dir"`
+	TimeoutClientData    *int   `q:"timeout_client_data"`
+	TimeoutMemberData    *int   `q:"timeout_member_data"`
+	TimeoutMemberConnect *int   `q:"timeout_member_connect"`
+	TimeoutTCPInspect    *int   `q:"timeout_tcp_inspect"`
 }
 
 // ToListenerListQuery formats a ListOpts into a query string.
@@ -120,6 +122,18 @@ type CreateOpts struct {
 
 	// Backend member inactivity timeout in milliseconds
 	TimeoutMemberData *int `json:"timeout_member_data,omitempty"`
+
+	// Backend member connection timeout in milliseconds
+	TimeoutMemberConnect *int `json:"timeout_member_connect,omitempty"`
+
+	// Time, in milliseconds, to wait for additional TCP packets for content inspection
+	TimeoutTCPInspect *int `json:"timeout_tcp_inspect,omitempty"`
+
+	// A dictionary of optional headers to insert into the request before it is sent to the backend member.
+	InsertHeaders map[string]string `json:"insert_headers,omitempty"`
+
+	// A list of IPv4, IPv6 or mix of both CIDRs
+	AllowedCIDRs []string `json:"allowed_cidrs,omitempty"`
 }
 
 // ToListenerCreateMap builds a request body from CreateOpts.
@@ -140,13 +154,15 @@ func Create(c *gophercloud.ServiceClient, opts CreateOptsBuilder) (r CreateResul
 		r.Err = err
 		return
 	}
-	_, r.Err = c.Post(rootURL(c), b, &r.Body, nil)
+	resp, err := c.Post(rootURL(c), b, &r.Body, nil)
+	_, r.Header, r.Err = gophercloud.ParseResponse(resp, err)
 	return
 }
 
 // Get retrieves a particular Listeners based on its unique ID.
 func Get(c *gophercloud.ServiceClient, id string) (r GetResult) {
-	_, r.Err = c.Get(resourceURL(c, id), &r.Body, nil)
+	resp, err := c.Get(resourceURL(c, id), &r.Body, nil)
+	_, r.Header, r.Err = gophercloud.ParseResponse(resp, err)
 	return
 }
 
@@ -171,10 +187,10 @@ type UpdateOpts struct {
 	ConnLimit *int `json:"connection_limit,omitempty"`
 
 	// A reference to a Barbican container of TLS secrets.
-	DefaultTlsContainerRef string `json:"default_tls_container_ref,omitempty"`
+	DefaultTlsContainerRef *string `json:"default_tls_container_ref,omitempty"`
 
 	// A list of references to TLS secrets.
-	SniContainerRefs []string `json:"sni_container_refs,omitempty"`
+	SniContainerRefs *[]string `json:"sni_container_refs,omitempty"`
 
 	// The administrative state of the Listener. A valid value is true (UP)
 	// or false (DOWN).
@@ -185,6 +201,18 @@ type UpdateOpts struct {
 
 	// Backend member inactivity timeout in milliseconds
 	TimeoutMemberData *int `json:"timeout_member_data,omitempty"`
+
+	// Backend member connection timeout in milliseconds
+	TimeoutMemberConnect *int `json:"timeout_member_connect,omitempty"`
+
+	// Time, in milliseconds, to wait for additional TCP packets for content inspection
+	TimeoutTCPInspect *int `json:"timeout_tcp_inspect,omitempty"`
+
+	// A dictionary of optional headers to insert into the request before it is sent to the backend member.
+	InsertHeaders *map[string]string `json:"insert_headers,omitempty"`
+
+	// A list of IPv4, IPv6 or mix of both CIDRs
+	AllowedCIDRs *[]string `json:"allowed_cidrs,omitempty"`
 }
 
 // ToListenerUpdateMap builds a request body from UpdateOpts.
@@ -209,20 +237,23 @@ func Update(c *gophercloud.ServiceClient, id string, opts UpdateOpts) (r UpdateR
 		r.Err = err
 		return
 	}
-	_, r.Err = c.Put(resourceURL(c, id), b, &r.Body, &gophercloud.RequestOpts{
+	resp, err := c.Put(resourceURL(c, id), b, &r.Body, &gophercloud.RequestOpts{
 		OkCodes: []int{200, 202},
 	})
+	_, r.Header, r.Err = gophercloud.ParseResponse(resp, err)
 	return
 }
 
 // Delete will permanently delete a particular Listeners based on its unique ID.
 func Delete(c *gophercloud.ServiceClient, id string) (r DeleteResult) {
-	_, r.Err = c.Delete(resourceURL(c, id), nil)
+	resp, err := c.Delete(resourceURL(c, id), nil)
+	_, r.Header, r.Err = gophercloud.ParseResponse(resp, err)
 	return
 }
 
 // GetStats will return the shows the current statistics of a particular Listeners.
 func GetStats(c *gophercloud.ServiceClient, id string) (r StatsResult) {
-	_, r.Err = c.Get(statisticsRootURL(c, id), &r.Body, nil)
+	resp, err := c.Get(statisticsRootURL(c, id), &r.Body, nil)
+	_, r.Header, r.Err = gophercloud.ParseResponse(resp, err)
 	return
 }

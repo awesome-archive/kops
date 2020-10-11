@@ -1,5 +1,5 @@
 /*
-Copyright 2016 The Kubernetes Authors.
+Copyright 2019 The Kubernetes Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -22,7 +22,7 @@ import (
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/aws/request"
 	"github.com/aws/aws-sdk-go/service/ec2"
-	"k8s.io/klog"
+	"k8s.io/klog/v2"
 )
 
 func (m *MockEC2) AddRouteTable(rt *ec2.RouteTable) {
@@ -32,10 +32,9 @@ func (m *MockEC2) AddRouteTable(rt *ec2.RouteTable) {
 	if m.RouteTables == nil {
 		m.RouteTables = make(map[string]*ec2.RouteTable)
 	}
-	for _, tag := range rt.Tags {
-		m.addTag(*rt.RouteTableId, tag)
-	}
-	rt.Tags = nil
+
+	m.addTags(*rt.RouteTableId, rt.Tags...)
+
 	m.RouteTables[*rt.RouteTableId] = rt
 }
 

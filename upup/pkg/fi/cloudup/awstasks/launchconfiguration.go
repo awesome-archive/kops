@@ -1,5 +1,5 @@
 /*
-Copyright 2016 The Kubernetes Authors.
+Copyright 2019 The Kubernetes Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -22,8 +22,8 @@ import (
 	"math"
 	"sort"
 	"strings"
-	"time"
 
+	"k8s.io/kops/pkg/apis/kops"
 	"k8s.io/kops/pkg/featureflag"
 	"k8s.io/kops/upup/pkg/fi"
 	"k8s.io/kops/upup/pkg/fi/cloudup/awsup"
@@ -33,7 +33,7 @@ import (
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/autoscaling"
 	"k8s.io/apimachinery/pkg/util/sets"
-	"k8s.io/klog"
+	"k8s.io/klog/v2"
 )
 
 // defaultRetainLaunchConfigurationCount is the number of launch configurations (matching the name prefix) that we should
@@ -49,6 +49,7 @@ func RetainLaunchConfigurationCount() int {
 }
 
 // LaunchConfiguration is the specification for a launch configuration
+// +kops:fitask
 type LaunchConfiguration struct {
 	// Name is the name of the configuration
 	Name *string
@@ -69,6 +70,8 @@ type LaunchConfiguration struct {
 	InstanceMonitoring *bool
 	// InstanceType is the machine type to use
 	InstanceType *string
+	// RootVolumeDeleteOnTermination states if the root volume will be deleted after instance termination
+	RootVolumeDeleteOnTermination *bool
 	// If volume type is io1, then we need to specify the number of Iops.
 	RootVolumeIops *int64
 	// RootVolumeOptimization enables EBS optimization for an instance
@@ -77,6 +80,8 @@ type LaunchConfiguration struct {
 	RootVolumeSize *int64
 	// RootVolumeType is the type of the EBS root volume to use (e.g. gp2)
 	RootVolumeType *string
+	// RootVolumeEncryption enables EBS root volume encryption for an instance
+	RootVolumeEncryption *bool
 	// SSHKey is the ssh key for the instances
 	SSHKey *SSHKey
 	// SecurityGroups is a list of security group associated
@@ -90,7 +95,6 @@ type LaunchConfiguration struct {
 }
 
 var _ fi.CompareWithID = &LaunchConfiguration{}
-
 var _ fi.ProducesDeletions = &LaunchConfiguration{}
 
 func (e *LaunchConfiguration) CompareWithID() *string {
@@ -165,7 +169,9 @@ func (e *LaunchConfiguration) Find(c *fi.Context) (*LaunchConfiguration, error) 
 		Tenancy:                lc.PlacementTenancy,
 	}
 
-	if lc.KeyName != nil {
+	// Only assign keyName if the existing launch config has one
+	// lc.KeyName comes back as an empty string when there is no key assigned
+	if lc.KeyName != nil && *lc.KeyName != "" {
 		actual.SSHKey = &SSHKey{Name: lc.KeyName}
 	}
 
@@ -182,7 +188,7 @@ func (e *LaunchConfiguration) Find(c *fi.Context) (*LaunchConfiguration, error) 
 	actual.SecurityGroups = securityGroups
 
 	// @step: get the image is order to find out the root device name as using the index
-	// is not vaiable, under conditions they move
+	// is not variable, under conditions they move
 	image, err := cloud.ResolveImage(fi.StringValue(e.ImageID))
 	if err != nil {
 		return nil, err
@@ -197,6 +203,8 @@ func (e *LaunchConfiguration) Find(c *fi.Context) (*LaunchConfiguration, error) 
 			actual.RootVolumeSize = b.Ebs.VolumeSize
 			actual.RootVolumeType = b.Ebs.VolumeType
 			actual.RootVolumeIops = b.Ebs.Iops
+			actual.RootVolumeEncryption = b.Ebs.Encrypted
+			actual.RootVolumeDeleteOnTermination = b.Ebs.DeleteOnTermination
 		} else {
 			_, d := BlockDeviceMappingFromAutoscaling(b)
 			actual.BlockDeviceMappings = append(actual.BlockDeviceMappings, d)
@@ -237,6 +245,10 @@ func (e *LaunchConfiguration) Find(c *fi.Context) (*LaunchConfiguration, error) 
 func (e *LaunchConfiguration) Run(c *fi.Context) error {
 	// TODO: Make Normalize a standard method
 	e.Normalize()
+
+	if e.SSHKey == nil && !useSSHKey(c.Cluster) {
+		e.SSHKey = &SSHKey{}
+	}
 
 	return fi.DefaultDeltaRunMethod(e, c)
 }
@@ -343,32 +355,14 @@ func (_ *LaunchConfiguration) RenderAWS(t *awsup.AWSAPITarget, a, e, changes *La
 		request.InstanceMonitoring = &autoscaling.InstanceMonitoring{Enabled: fi.Bool(false)}
 	}
 
-	attempt := 0
-	maxAttempts := 10
-	for {
-		attempt++
-
-		klog.V(8).Infof("AWS CreateLaunchConfiguration %s", aws.StringValue(request.LaunchConfigurationName))
-		_, err = t.Cloud.Autoscaling().CreateLaunchConfiguration(request)
-		if err == nil {
-			break
+	if _, err = t.Cloud.Autoscaling().CreateLaunchConfiguration(request); err != nil {
+		code := awsup.AWSErrorCode(err)
+		message := awsup.AWSErrorMessage(err)
+		if code == "ValidationError" && strings.Contains(message, "Invalid IamInstanceProfile") {
+			klog.V(4).Infof("error creating LaunchConfiguration: %s", message)
+			return fi.NewTryAgainLaterError("waiting for the IAM Instance Profile to be propagated")
 		}
-
-		if awsup.AWSErrorCode(err) == "ValidationError" {
-			message := awsup.AWSErrorMessage(err)
-			if strings.Contains(message, "not authorized") || strings.Contains(message, "Invalid IamInstance") {
-				if attempt > maxAttempts {
-					return fmt.Errorf("IAM instance profile not yet created/propagated (original error: %v)", message)
-				}
-				klog.V(4).Infof("got an error indicating that the IAM instance profile %q is not ready: %q", fi.StringValue(e.IAMInstanceProfile.Name), message)
-				klog.Infof("waiting for IAM instance profile %q to be ready", fi.StringValue(e.IAMInstanceProfile.Name))
-				time.Sleep(10 * time.Second)
-				continue
-			}
-			klog.V(4).Infof("ErrorCode=%q, Message=%q", awsup.AWSErrorCode(err), awsup.AWSErrorMessage(err))
-		}
-
-		return fmt.Errorf("error creating AutoscalingLaunchConfiguration: %v", err)
+		return fmt.Errorf("error creating LaunchConfiguration: %s", message)
 	}
 
 	e.ID = fi.String(launchConfigurationName)
@@ -391,47 +385,48 @@ func (t *LaunchConfiguration) buildRootDevice(cloud awsup.AWSCloud) (map[string]
 	bm := make(map[string]*BlockDeviceMapping)
 
 	bm[aws.StringValue(img.RootDeviceName)] = &BlockDeviceMapping{
-		EbsDeleteOnTermination: aws.Bool(true),
+		EbsDeleteOnTermination: t.RootVolumeDeleteOnTermination,
 		EbsVolumeSize:          t.RootVolumeSize,
 		EbsVolumeType:          t.RootVolumeType,
 		EbsVolumeIops:          t.RootVolumeIops,
+		EbsEncrypted:           t.RootVolumeEncryption,
 	}
 
 	return bm, nil
 }
 
 type terraformLaunchConfiguration struct {
-	NamePrefix               *string                 `json:"name_prefix,omitempty"`
-	ImageID                  *string                 `json:"image_id,omitempty"`
-	InstanceType             *string                 `json:"instance_type,omitempty"`
-	KeyName                  *terraform.Literal      `json:"key_name,omitempty"`
-	IAMInstanceProfile       *terraform.Literal      `json:"iam_instance_profile,omitempty"`
-	SecurityGroups           []*terraform.Literal    `json:"security_groups,omitempty"`
-	AssociatePublicIpAddress *bool                   `json:"associate_public_ip_address,omitempty"`
-	UserData                 *terraform.Literal      `json:"user_data,omitempty"`
-	RootBlockDevice          *terraformBlockDevice   `json:"root_block_device,omitempty"`
-	EBSOptimized             *bool                   `json:"ebs_optimized,omitempty"`
-	EBSBlockDevice           []*terraformBlockDevice `json:"ebs_block_device,omitempty"`
-	EphemeralBlockDevice     []*terraformBlockDevice `json:"ephemeral_block_device,omitempty"`
-	Lifecycle                *terraform.Lifecycle    `json:"lifecycle,omitempty"`
-	SpotPrice                *string                 `json:"spot_price,omitempty"`
-	PlacementTenancy         *string                 `json:"placement_tenancy,omitempty"`
-	InstanceMonitoring       *bool                   `json:"enable_monitoring,omitempty"`
+	NamePrefix               *string                 `json:"name_prefix,omitempty" cty:"name_prefix"`
+	ImageID                  *string                 `json:"image_id,omitempty" cty:"image_id"`
+	InstanceType             *string                 `json:"instance_type,omitempty" cty:"instance_type"`
+	KeyName                  *terraform.Literal      `json:"key_name,omitempty" cty:"key_name"`
+	IAMInstanceProfile       *terraform.Literal      `json:"iam_instance_profile,omitempty" cty:"iam_instance_profile"`
+	SecurityGroups           []*terraform.Literal    `json:"security_groups,omitempty" cty:"security_groups"`
+	AssociatePublicIpAddress *bool                   `json:"associate_public_ip_address,omitempty" cty:"associate_public_ip_address"`
+	UserData                 *terraform.Literal      `json:"user_data,omitempty" cty:"user_data"`
+	RootBlockDevice          *terraformBlockDevice   `json:"root_block_device,omitempty" cty:"root_block_device"`
+	EBSOptimized             *bool                   `json:"ebs_optimized,omitempty" cty:"ebs_optimized"`
+	EBSBlockDevice           []*terraformBlockDevice `json:"ebs_block_device,omitempty" cty:"ebs_block_device"`
+	EphemeralBlockDevice     []*terraformBlockDevice `json:"ephemeral_block_device,omitempty" cty:"ephemeral_block_device"`
+	Lifecycle                *terraform.Lifecycle    `json:"lifecycle,omitempty" cty:"lifecycle"`
+	SpotPrice                *string                 `json:"spot_price,omitempty" cty:"spot_price"`
+	PlacementTenancy         *string                 `json:"placement_tenancy,omitempty" cty:"placement_tenancy"`
+	InstanceMonitoring       *bool                   `json:"enable_monitoring,omitempty" cty:"enable_monitoring"`
 }
 
 type terraformBlockDevice struct {
 	// For ephemeral devices
-	DeviceName  *string `json:"device_name,omitempty"`
-	VirtualName *string `json:"virtual_name,omitempty"`
+	DeviceName  *string `json:"device_name,omitempty" cty:"device_name"`
+	VirtualName *string `json:"virtual_name,omitempty" cty:"virtual_name"`
 
 	// For root
-	VolumeType *string `json:"volume_type,omitempty"`
-	VolumeSize *int64  `json:"volume_size,omitempty"`
-	Iops       *int64  `json:"iops,omitempty"`
+	VolumeType *string `json:"volume_type,omitempty" cty:"volume_type"`
+	VolumeSize *int64  `json:"volume_size,omitempty" cty:"volume_size"`
+	Iops       *int64  `json:"iops,omitempty" cty:"iops"`
 	// Encryption
-	Encrypted *bool `json:"encrypted,omitempty"`
+	Encrypted *bool `json:"encrypted,omitempty" cty:"encrypted"`
 	// Termination
-	DeleteOnTermination *bool `json:"delete_on_termination,omitempty"`
+	DeleteOnTermination *bool `json:"delete_on_termination,omitempty" cty:"delete_on_termination"`
 }
 
 // RenderTerraform is responsible for rendering the terraform json
@@ -495,7 +490,8 @@ func (_ *LaunchConfiguration) RenderTerraform(t *terraform.TerraformTarget, a, e
 					VolumeType:          bdm.EbsVolumeType,
 					VolumeSize:          bdm.EbsVolumeSize,
 					Iops:                bdm.EbsVolumeIops,
-					DeleteOnTermination: fi.Bool(true),
+					Encrypted:           bdm.EbsEncrypted,
+					DeleteOnTermination: bdm.EbsDeleteOnTermination,
 				}
 			}
 		}
@@ -516,7 +512,7 @@ func (_ *LaunchConfiguration) RenderTerraform(t *terraform.TerraformTarget, a, e
 			for _, deviceName := range sets.StringKeySet(additionalDevices).List() {
 				bdm := additionalDevices[deviceName]
 				tf.EBSBlockDevice = append(tf.EBSBlockDevice, &terraformBlockDevice{
-					DeleteOnTermination: fi.Bool(true),
+					DeleteOnTermination: bdm.EbsDeleteOnTermination,
 					DeviceName:          fi.String(deviceName),
 					Encrypted:           bdm.EbsEncrypted,
 					VolumeSize:          bdm.EbsVolumeSize,
@@ -527,9 +523,15 @@ func (_ *LaunchConfiguration) RenderTerraform(t *terraform.TerraformTarget, a, e
 	}
 
 	if e.UserData != nil {
-		tf.UserData, err = t.AddFile("aws_launch_configuration", *e.Name, "user_data", e.UserData)
+		userData, err := fi.ResourceAsString(e.UserData)
 		if err != nil {
 			return err
+		}
+		if userData != "" {
+			tf.UserData, err = t.AddFile("aws_launch_configuration", *e.Name, "user_data", e.UserData, false)
+			if err != nil {
+				return err
+			}
 		}
 	}
 	if e.IAMInstanceProfile != nil {
@@ -605,7 +607,7 @@ func (_ *LaunchConfiguration) RenderCloudformation(t *cloudformation.Cloudformat
 		cf.SpotPrice = aws.String(e.SpotPrice)
 	}
 
-	if e.SSHKey != nil {
+	if e.SSHKey != nil && !e.SSHKey.NoSSHKey() {
 		if e.SSHKey.Name == nil {
 			return fmt.Errorf("SSHKey Name not set")
 		}
@@ -649,7 +651,8 @@ func (_ *LaunchConfiguration) RenderCloudformation(t *cloudformation.Cloudformat
 						VolumeType:          bdm.EbsVolumeType,
 						VolumeSize:          bdm.EbsVolumeSize,
 						Iops:                bdm.EbsVolumeIops,
-						DeleteOnTermination: fi.Bool(true),
+						Encrypted:           bdm.EbsEncrypted,
+						DeleteOnTermination: bdm.EbsDeleteOnTermination,
 					},
 				}
 				cf.BlockDeviceMappings = append(cf.BlockDeviceMappings, d)
@@ -672,7 +675,7 @@ func (_ *LaunchConfiguration) RenderCloudformation(t *cloudformation.Cloudformat
 					Ebs: &cloudformationBlockDeviceEBS{
 						VolumeType:          bdm.EbsVolumeType,
 						VolumeSize:          bdm.EbsVolumeSize,
-						DeleteOnTermination: fi.Bool(true),
+						DeleteOnTermination: bdm.EbsDeleteOnTermination,
 						Encrypted:           bdm.EbsEncrypted,
 					},
 				}
@@ -771,4 +774,12 @@ func (e *LaunchConfiguration) FindDeletions(c *fi.Context) ([]fi.Deletion, error
 	klog.V(2).Infof("will delete launch configurations: %v", removals)
 
 	return removals, nil
+}
+
+func useSSHKey(c *kops.Cluster) bool {
+	if c != nil {
+		sshKeyName := c.Spec.SSHKeyName
+		return sshKeyName != nil && *sshKeyName != ""
+	}
+	return true
 }

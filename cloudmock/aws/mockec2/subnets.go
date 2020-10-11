@@ -1,5 +1,5 @@
 /*
-Copyright 2016 The Kubernetes Authors.
+Copyright 2019 The Kubernetes Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -23,7 +23,7 @@ import (
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/aws/request"
 	"github.com/aws/aws-sdk-go/service/ec2"
-	"k8s.io/klog"
+	"k8s.io/klog/v2"
 )
 
 type subnetInfo struct {
@@ -80,6 +80,8 @@ func (m *MockEC2) CreateSubnetWithId(request *ec2.CreateSubnetInput, id string) 
 	m.subnets[*subnet.SubnetId] = &subnetInfo{
 		main: *subnet,
 	}
+
+	m.addTags(id, tagSpecificationsToTags(request.TagSpecifications, ec2.ResourceTypeSubnet)...)
 
 	response := &ec2.CreateSubnetOutput{
 		Subnet: subnet,

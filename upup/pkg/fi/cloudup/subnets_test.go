@@ -1,5 +1,5 @@
 /*
-Copyright 2016 The Kubernetes Authors.
+Copyright 2019 The Kubernetes Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -99,7 +99,7 @@ func Test_AssignSubnets(t *testing.T) {
 		c.Spec.NetworkCIDR = "10.0.0.0/8"
 		c.Spec.Subnets = test.subnets
 
-		err := assignCIDRsToSubnets(c)
+		err := assignCIDRsToSubnets(c, nil)
 		if err != nil {
 			t.Fatalf("unexpected error on test %d: %v", i+1, err)
 		}

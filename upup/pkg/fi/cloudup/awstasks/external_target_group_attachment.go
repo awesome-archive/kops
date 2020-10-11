@@ -1,5 +1,5 @@
 /*
-Copyright 2016 The Kubernetes Authors.
+Copyright 2019 The Kubernetes Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -22,14 +22,14 @@ import (
 
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/autoscaling"
-	"k8s.io/klog"
+	"k8s.io/klog/v2"
 	"k8s.io/kops/upup/pkg/fi"
 	"k8s.io/kops/upup/pkg/fi/cloudup/awsup"
 	"k8s.io/kops/upup/pkg/fi/cloudup/cloudformation"
 	"k8s.io/kops/upup/pkg/fi/cloudup/terraform"
 )
 
-//go:generate fitask -type=ExternalTargetGroupAttachment
+// +kops:fitask
 type ExternalTargetGroupAttachment struct {
 	Name      *string
 	Lifecycle *fi.Lifecycle
@@ -113,8 +113,8 @@ func (_ *ExternalTargetGroupAttachment) RenderAWS(t *awsup.AWSAPITarget, a, e, c
 }
 
 type terraformExternalTargetGroupAttachment struct {
-	TargetGroupARN   *terraform.Literal `json:"alb_target_group_arn,omitempty"`
-	AutoscalingGroup *terraform.Literal `json:"autoscaling_group_name,omitempty"`
+	TargetGroupARN   *terraform.Literal `json:"alb_target_group_arn,omitempty" cty:"alb_target_group_arn"`
+	AutoscalingGroup *terraform.Literal `json:"autoscaling_group_name,omitempty" cty:"autoscaling_group_name"`
 }
 
 func (_ *ExternalTargetGroupAttachment) RenderTerraform(t *terraform.TerraformTarget, a, e, changes *ExternalTargetGroupAttachment) error {

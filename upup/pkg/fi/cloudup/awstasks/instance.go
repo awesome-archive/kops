@@ -1,5 +1,5 @@
 /*
-Copyright 2016 The Kubernetes Authors.
+Copyright 2019 The Kubernetes Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -24,7 +24,7 @@ import (
 
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/ec2"
-	"k8s.io/klog"
+	"k8s.io/klog/v2"
 	"k8s.io/kops/upup/pkg/fi"
 	"k8s.io/kops/upup/pkg/fi/cloudup/awsup"
 	"k8s.io/kops/upup/pkg/fi/cloudup/terraform"
@@ -34,6 +34,7 @@ import (
 const MaxUserDataSize = 16384
 
 // Instance defines the instance specification
+// +kops:fitask
 type Instance struct {
 	ID        *string
 	Lifecycle *fi.Lifecycle
@@ -88,9 +89,7 @@ func (e *Instance) Find(c *fi.Context) (*Instance, error) {
 	instances := []*ec2.Instance{}
 	if response != nil {
 		for _, reservation := range response.Reservations {
-			for _, instance := range reservation.Instances {
-				instances = append(instances, instance)
-			}
+			instances = append(instances, reservation.Instances...)
 		}
 	}
 

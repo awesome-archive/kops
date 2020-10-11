@@ -1,5 +1,5 @@
 /*
-Copyright 2016 The Kubernetes Authors.
+Copyright 2019 The Kubernetes Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -22,7 +22,7 @@ import (
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/ec2"
 	"k8s.io/apimachinery/pkg/util/validation/field"
-	"k8s.io/klog"
+	"k8s.io/klog/v2"
 	"k8s.io/kops/pkg/featureflag"
 	"k8s.io/kops/upup/pkg/fi"
 	"k8s.io/kops/upup/pkg/fi/cloudup/awsup"
@@ -30,7 +30,7 @@ import (
 	"k8s.io/kops/upup/pkg/fi/cloudup/terraform"
 )
 
-//go:generate fitask -type=VPC
+// +kops:fitask
 type VPC struct {
 	Name      *string
 	Lifecycle *fi.Lifecycle
@@ -44,9 +44,15 @@ type VPC struct {
 	Shared *bool
 
 	Tags map[string]string
+
+	// AssociateExtraCIDRBlocks contains a list of cidr blocks that should be
+	// associated with the VPC; any other CIDR blocks should be disassociated.
+	// The associations themselves are created through the VPCCIDRBlock awstask.
+	AssociateExtraCIDRBlocks []string
 }
 
 var _ fi.CompareWithID = &VPC{}
+var _ fi.ProducesDeletions = &VPC{}
 
 func (e *VPC) CompareWithID() *string {
 	return e.ID
@@ -109,6 +115,7 @@ func (e *VPC) Find(c *fi.Context) (*VPC, error) {
 	}
 	actual.Lifecycle = e.Lifecycle
 	actual.Name = e.Name // Name is part of Tags
+	actual.AssociateExtraCIDRBlocks = e.AssociateExtraCIDRBlocks
 
 	return actual, nil
 }
@@ -155,7 +162,8 @@ func (_ *VPC) RenderAWS(t *awsup.AWSAPITarget, a, e, changes *VPC) error {
 		klog.V(2).Infof("Creating VPC with CIDR: %q", *e.CIDR)
 
 		request := &ec2.CreateVpcInput{
-			CidrBlock: e.CIDR,
+			CidrBlock:         e.CIDR,
+			TagSpecifications: awsup.EC2TagSpecification(ec2.ResourceTypeVpc, e.Tags),
 		}
 
 		response, err := t.Cloud.EC2().CreateVpc(request)
@@ -193,11 +201,58 @@ func (_ *VPC) RenderAWS(t *awsup.AWSAPITarget, a, e, changes *VPC) error {
 	return t.AddAWSTags(*e.ID, e.Tags)
 }
 
+func (e *VPC) FindDeletions(c *fi.Context) ([]fi.Deletion, error) {
+	if fi.IsNilOrEmpty(e.ID) || fi.BoolValue(e.Shared) {
+		return nil, nil
+	}
+
+	var removals []fi.Deletion
+	request := &ec2.DescribeVpcsInput{
+		VpcIds: []*string{e.ID},
+	}
+	cloud := c.Cloud.(awsup.AWSCloud)
+	response, err := cloud.EC2().DescribeVpcs(request)
+	if err != nil {
+		return nil, err
+	}
+	if response == nil || len(response.Vpcs) == 0 {
+		return nil, nil
+	}
+
+	if len(response.Vpcs) != 1 {
+		return nil, fmt.Errorf("found multiple VPCs matching tags")
+	}
+	vpc := response.Vpcs[0]
+	for _, association := range vpc.CidrBlockAssociationSet {
+		// We'll only delete CIDR associations that are not the primary association
+		// and that have a state of "associated"
+		if fi.StringValue(association.CidrBlock) == fi.StringValue(vpc.CidrBlock) ||
+			association.CidrBlockState != nil && fi.StringValue(association.CidrBlockState.State) != ec2.VpcCidrBlockStateCodeAssociated {
+			continue
+		}
+		match := false
+		for _, cidr := range e.AssociateExtraCIDRBlocks {
+			if fi.StringValue(association.CidrBlock) == cidr {
+				match = true
+				break
+			}
+		}
+		if !match {
+			removals = append(removals, &deleteVPCCIDRBlock{
+				vpcID:         vpc.VpcId,
+				cidrBlock:     association.CidrBlock,
+				associationID: association.AssociationId,
+			})
+		}
+	}
+	return removals, nil
+}
+
 type terraformVPC struct {
-	CIDR               *string           `json:"cidr_block,omitempty"`
-	EnableDNSHostnames *bool             `json:"enable_dns_hostnames,omitempty"`
-	EnableDNSSupport   *bool             `json:"enable_dns_support,omitempty"`
-	Tags               map[string]string `json:"tags,omitempty"`
+	CIDR               *string           `json:"cidr_block,omitempty" cty:"cidr_block"`
+	EnableDNSHostnames *bool             `json:"enable_dns_hostnames,omitempty" cty:"enable_dns_hostnames"`
+	EnableDNSSupport   *bool             `json:"enable_dns_support,omitempty" cty:"enable_dns_support"`
+	Tags               map[string]string `json:"tags,omitempty" cty:"tags"`
 }
 
 func (_ *VPC) RenderTerraform(t *terraform.TerraformTarget, a, e, changes *VPC) error {
@@ -278,4 +333,33 @@ func (e *VPC) CloudformationLink() *cloudformation.Literal {
 	}
 
 	return cloudformation.Ref("AWS::EC2::VPC", *e.Name)
+}
+
+type deleteVPCCIDRBlock struct {
+	vpcID         *string
+	cidrBlock     *string
+	associationID *string
+}
+
+var _ fi.Deletion = &deleteVPCCIDRBlock{}
+
+func (d *deleteVPCCIDRBlock) Delete(t fi.Target) error {
+
+	awsTarget, ok := t.(*awsup.AWSAPITarget)
+	if !ok {
+		return fmt.Errorf("unexpected target type for deletion: %T", t)
+	}
+	request := &ec2.DisassociateVpcCidrBlockInput{
+		AssociationId: d.associationID,
+	}
+	_, err := awsTarget.Cloud.EC2().DisassociateVpcCidrBlock(request)
+	return err
+}
+
+func (d *deleteVPCCIDRBlock) TaskName() string {
+	return "VPCCIDRBlock"
+}
+
+func (d *deleteVPCCIDRBlock) Item() string {
+	return fmt.Sprintf("%v: cidr=%v", *d.vpcID, *d.cidrBlock)
 }

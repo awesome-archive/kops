@@ -1,5 +1,5 @@
 /*
-Copyright 2016 The Kubernetes Authors.
+Copyright 2019 The Kubernetes Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -23,8 +23,9 @@ import (
 	"os"
 	"path"
 	"sync"
+	"syscall"
 
-	"k8s.io/klog"
+	"k8s.io/klog/v2"
 	"k8s.io/kops/pkg/try"
 	"k8s.io/kops/util/pkg/hashing"
 )
@@ -112,7 +113,11 @@ func (p *FSPath) CreateFile(data io.ReadSeeker, acl ACL) error {
 
 // ReadFile implements Path::ReadFile
 func (p *FSPath) ReadFile() ([]byte, error) {
-	return ioutil.ReadFile(p.location)
+	file, err := ioutil.ReadFile(p.location)
+	if err == syscall.ENOENT {
+		err = os.ErrNotExist
+	}
+	return file, err
 }
 
 // WriteTo implements io.WriterTo
@@ -185,6 +190,10 @@ func (p *FSPath) String() string {
 
 func (p *FSPath) Remove() error {
 	return os.Remove(p.location)
+}
+
+func (p *FSPath) RemoveAllVersions() error {
+	return p.Remove()
 }
 
 func (p *FSPath) PreferredHash() (*hashing.Hash, error) {

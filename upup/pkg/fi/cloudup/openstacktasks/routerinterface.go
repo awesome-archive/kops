@@ -1,5 +1,5 @@
 /*
-Copyright 2018 The Kubernetes Authors.
+Copyright 2019 The Kubernetes Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -21,12 +21,12 @@ import (
 
 	"github.com/gophercloud/gophercloud/openstack/networking/v2/extensions/layer3/routers"
 	"github.com/gophercloud/gophercloud/openstack/networking/v2/ports"
-	"k8s.io/klog"
+	"k8s.io/klog/v2"
 	"k8s.io/kops/upup/pkg/fi"
 	"k8s.io/kops/upup/pkg/fi/cloudup/openstack"
 )
 
-//go:generate fitask -type=RouterInterface
+// +kops:fitask
 type RouterInterface struct {
 	ID        *string
 	Name      *string
@@ -77,7 +77,7 @@ func (i *RouterInterface) Find(context *fi.Context) (*RouterInterface, error) {
 		for _, ip := range p.FixedIPs {
 			if ip.SubnetID == subnetID {
 				if actual != nil {
-					return nil, fmt.Errorf("find multiple interfaces which subnet:%s attach to", subnetID)
+					return nil, fmt.Errorf("found multiple interfaces which subnet:%s attach to", subnetID)
 				}
 				actual = &RouterInterface{
 					ID:        fi.String(p.ID),
@@ -97,7 +97,7 @@ func (i *RouterInterface) Run(context *fi.Context) error {
 	return fi.DefaultDeltaRunMethod(i, context)
 }
 
-func (_ *RouterInterface) CheckChanges(a, e, changes *RouterInterface) error {
+func (*RouterInterface) CheckChanges(a, e, changes *RouterInterface) error {
 	if a == nil {
 		if e.Router == nil {
 			return fi.RequiredField("Router")

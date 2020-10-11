@@ -17,15 +17,15 @@ limitations under the License.
 package gce
 
 import (
+	"context"
 	"encoding/base32"
 	"fmt"
 	"hash/fnv"
 	"strings"
 
-	context "golang.org/x/net/context"
-	compute "google.golang.org/api/compute/v0.beta"
+	compute "google.golang.org/api/compute/v1"
 	v1 "k8s.io/api/core/v1"
-	"k8s.io/klog"
+	"k8s.io/klog/v2"
 	"k8s.io/kops/pkg/apis/kops"
 	"k8s.io/kops/pkg/cloudinstances"
 )
@@ -52,17 +52,29 @@ func (c *mockGCECloud) DeleteGroup(g *cloudinstances.CloudInstanceGroup) error {
 }
 
 // DeleteInstance deletes a GCE instance
-func (c *gceCloudImplementation) DeleteInstance(i *cloudinstances.CloudInstanceGroupMember) error {
-	return recreateCloudInstanceGroupMember(c, i)
+func (c *gceCloudImplementation) DeleteInstance(i *cloudinstances.CloudInstance) error {
+	return recreateCloudInstance(c, i)
 }
 
 // DeleteInstance deletes a GCE instance
-func (c *mockGCECloud) DeleteInstance(i *cloudinstances.CloudInstanceGroupMember) error {
-	return recreateCloudInstanceGroupMember(c, i)
+func (c *mockGCECloud) DeleteInstance(i *cloudinstances.CloudInstance) error {
+	return recreateCloudInstance(c, i)
 }
 
-// recreateCloudInstanceGroupMember recreates the specified instances, managed by an InstanceGroupManager
-func recreateCloudInstanceGroupMember(c GCECloud, i *cloudinstances.CloudInstanceGroupMember) error {
+// DetachInstance is not implemented yet. It needs to cause a cloud instance to no longer be counted against the group's size limits.
+func (c *gceCloudImplementation) DetachInstance(i *cloudinstances.CloudInstance) error {
+	klog.V(8).Info("gce cloud provider DetachInstance not implemented yet")
+	return fmt.Errorf("gce cloud provider does not support surging")
+}
+
+// DetachInstance is not implemented yet. It needs to cause a cloud instance to no longer be counted against the group's size limits.
+func (c *mockGCECloud) DetachInstance(i *cloudinstances.CloudInstance) error {
+	klog.V(8).Info("gce cloud provider DetachInstance not implemented yet")
+	return fmt.Errorf("gce cloud provider does not support surging")
+}
+
+// recreateCloudInstance recreates the specified instances, managed by an InstanceGroupManager
+func recreateCloudInstance(c GCECloud, i *cloudinstances.CloudInstance) error {
 	mig := i.CloudInstanceGroup.Raw.(*compute.InstanceGroupManager)
 
 	klog.V(2).Infof("Recreating GCE Instance %s in MIG %s", i.ID, mig.Name)
@@ -157,6 +169,7 @@ func getCloudGroups(c GCECloud, cluster *kops.Cluster, instancegroups []*kops.In
 					HumanName:     mig.Name,
 					InstanceGroup: ig,
 					MinSize:       int(mig.TargetSize),
+					TargetSize:    int(mig.TargetSize),
 					MaxSize:       int(mig.TargetSize),
 					Raw:           mig,
 				}
@@ -171,7 +184,7 @@ func getCloudGroups(c GCECloud, cluster *kops.Cluster, instancegroups []*kops.In
 
 				for _, i := range instances {
 					id := i.Instance
-					cm := &cloudinstances.CloudInstanceGroupMember{
+					cm := &cloudinstances.CloudInstance{
 						ID:                 id,
 						CloudInstanceGroup: g,
 					}

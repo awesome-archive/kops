@@ -1,5 +1,5 @@
 /*
-Copyright 2016 The Kubernetes Authors.
+Copyright 2019 The Kubernetes Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -20,7 +20,7 @@ import (
 	"fmt"
 
 	"k8s.io/apimachinery/pkg/util/sets"
-	"k8s.io/klog"
+	"k8s.io/klog/v2"
 	"k8s.io/kops/pkg/apis/kops"
 	"k8s.io/kops/pkg/featureflag"
 	"k8s.io/kops/pkg/model/iam"
@@ -66,38 +66,41 @@ func (b *StorageAclBuilder) Build(c *fi.ModelBuilderContext) error {
 				Role:      s("READER"),
 			})
 		}
-	}
 
-	klog.Warningf("we need to split master / node roles")
-	role := kops.InstanceGroupRoleMaster
-	writeablePaths, err := iam.WriteableVFSPaths(b.Cluster, role)
-	if err != nil {
-		return err
-	}
+		klog.Warningf("we need to split master / node roles")
+		nodeRole, err := iam.BuildNodeRoleSubject(kops.InstanceGroupRoleMaster)
+		if err != nil {
+			return err
+		}
 
-	buckets := sets.NewString()
-	for _, p := range writeablePaths {
-		if gcsPath, ok := p.(*vfs.GSPath); ok {
-			bucket := gcsPath.Bucket()
-			if buckets.Has(bucket) {
-				continue
+		writeablePaths, err := iam.WriteableVFSPaths(b.Cluster, nodeRole)
+		if err != nil {
+			return err
+		}
+
+		buckets := sets.NewString()
+		for _, p := range writeablePaths {
+			if gcsPath, ok := p.(*vfs.GSPath); ok {
+				bucket := gcsPath.Bucket()
+				if buckets.Has(bucket) {
+					continue
+				}
+
+				klog.Warningf("adding bucket level write ACL to gs://%s to support etcd backup", bucket)
+
+				c.AddTask(&gcetasks.StorageBucketAcl{
+					Name:      s("serviceaccount-backup-readwrite-" + bucket),
+					Lifecycle: b.Lifecycle,
+					Bucket:    s(bucket),
+					Entity:    s("user-" + serviceAccount),
+					Role:      s("WRITER"),
+				})
+
+				buckets.Insert(bucket)
+			} else {
+				klog.Warningf("unknown path, can't apply IAM policy: %q", p)
 			}
-
-			klog.Warningf("adding bucket level write ACL to gs://%s to support etcd backup", bucket)
-
-			c.AddTask(&gcetasks.StorageBucketAcl{
-				Name:      s("serviceaccount-backup-readwrite-" + bucket),
-				Lifecycle: b.Lifecycle,
-				Bucket:    s(bucket),
-				Entity:    s("user-" + serviceAccount),
-				Role:      s("WRITER"),
-			})
-
-			buckets.Insert(bucket)
-		} else {
-			klog.Warningf("unknown path, can't apply IAM policy: %q", p)
 		}
 	}
-
 	return nil
 }

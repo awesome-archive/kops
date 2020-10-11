@@ -1,5 +1,5 @@
 /*
-Copyright 2016 The Kubernetes Authors.
+Copyright 2019 The Kubernetes Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -30,6 +30,10 @@ type SSHKeyModelBuilder struct {
 var _ fi.ModelBuilder = &SSHKeyModelBuilder{}
 
 func (b *SSHKeyModelBuilder) Build(c *fi.ModelBuilderContext) error {
+	if !b.UseSSHKey() {
+		return nil
+	}
+
 	name, err := b.SSHKeyName()
 	if err != nil {
 		return err
@@ -37,6 +41,8 @@ func (b *SSHKeyModelBuilder) Build(c *fi.ModelBuilderContext) error {
 	t := &awstasks.SSHKey{
 		Name:      s(name),
 		Lifecycle: b.Lifecycle,
+		Tags:      b.CloudTags(b.ClusterName(), false),
+		Shared:    fi.StringValue(b.Cluster.Spec.SSHKeyName) != "",
 	}
 	if len(b.SSHPublicKeys) >= 1 {
 		t.PublicKey = fi.WrapResource(fi.NewStringResource(string(b.SSHPublicKeys[0])))

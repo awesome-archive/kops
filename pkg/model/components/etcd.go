@@ -1,5 +1,5 @@
 /*
-Copyright 2016 The Kubernetes Authors.
+Copyright 2019 The Kubernetes Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -24,7 +24,7 @@ import (
 	"k8s.io/kops/upup/pkg/fi/loader"
 )
 
-const DefaultBackupImage = "kopeio/etcd-backup:3.0.20190516"
+const DefaultBackupImage = "kopeio/etcd-backup:3.0.20200531"
 
 // EtcdOptionsBuilder adds options for etcd to the model
 type EtcdOptionsBuilder struct {
@@ -40,13 +40,18 @@ const (
 	DefaultEtcd3Version_1_11 = "3.2.24"
 
 	DefaultEtcd3Version_1_13 = "3.2.24"
+
+	DefaultEtcd3Version_1_14 = "3.3.10"
+
+	DefaultEtcd3Version_1_17 = "3.4.3"
 )
 
 // BuildOptions is responsible for filling in the defaults for the etcd cluster model
 func (b *EtcdOptionsBuilder) BuildOptions(o interface{}) error {
 	spec := o.(*kops.ClusterSpec)
 
-	for _, c := range spec.EtcdClusters {
+	for i := range spec.EtcdClusters {
+		c := &spec.EtcdClusters[i]
 		if c.Provider == "" {
 			if b.IsKubernetesGTE("1.12") {
 				c.Provider = kops.EtcdProviderTypeManager
@@ -60,7 +65,11 @@ func (b *EtcdOptionsBuilder) BuildOptions(o interface{}) error {
 		// Ensure the version is set
 		if c.Version == "" && c.Provider == kops.EtcdProviderTypeLegacy {
 			// Even if in legacy mode, etcd version 2 is unsupported as of k8s 1.13
-			if b.IsKubernetesGTE("1.13") {
+			if b.IsKubernetesGTE("1.17") {
+				c.Version = DefaultEtcd3Version_1_17
+			} else if b.IsKubernetesGTE("1.14") {
+				c.Version = DefaultEtcd3Version_1_14
+			} else if b.IsKubernetesGTE("1.13") {
 				c.Version = DefaultEtcd3Version_1_13
 			} else {
 				c.Version = DefaultEtcd2Version
@@ -69,10 +78,14 @@ func (b *EtcdOptionsBuilder) BuildOptions(o interface{}) error {
 
 		if c.Version == "" && c.Provider == kops.EtcdProviderTypeManager {
 			// From 1.11, we run the k8s-recommended versions of etcd when using the manager
-			if b.IsKubernetesGTE("1.11") {
-				c.Version = DefaultEtcd3Version_1_11
+			if b.IsKubernetesGTE("1.17") {
+				c.Version = DefaultEtcd3Version_1_17
+			} else if b.IsKubernetesGTE("1.14") {
+				c.Version = DefaultEtcd3Version_1_14
+			} else if b.IsKubernetesGTE("1.13") {
+				c.Version = DefaultEtcd3Version_1_13
 			} else {
-				c.Version = DefaultEtcd2Version
+				c.Version = DefaultEtcd3Version_1_11
 			}
 		}
 
@@ -98,11 +111,8 @@ func (b *EtcdOptionsBuilder) BuildOptions(o interface{}) error {
 				c.EnableTLSAuth = true
 			}
 		}
-	}
 
-	// Remap the well known images
-	for _, c := range spec.EtcdClusters {
-
+		// Remap the well known images
 		// We remap the etcd manager image when we build the manifest,
 		// but we need to map the standalone images here because protokube launches them
 
@@ -128,7 +138,7 @@ func (b *EtcdOptionsBuilder) BuildOptions(o interface{}) error {
 			if c.Backups != nil {
 				image := c.Backups.Image
 				if image == "" {
-					image = fmt.Sprintf(DefaultBackupImage)
+					image = DefaultBackupImage
 				}
 
 				if image != "" {

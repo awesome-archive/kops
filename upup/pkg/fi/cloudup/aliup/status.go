@@ -1,5 +1,5 @@
 /*
-Copyright 2018 The Kubernetes Authors.
+Copyright 2019 The Kubernetes Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -25,7 +25,7 @@ import (
 	"github.com/denverdino/aliyungo/ecs"
 	"github.com/denverdino/aliyungo/ess"
 	v1 "k8s.io/api/core/v1"
-	"k8s.io/klog"
+	"k8s.io/klog/v2"
 	"k8s.io/kops/pkg/apis/kops"
 	"k8s.io/kops/pkg/cloudinstances"
 	"k8s.io/kops/protokube/pkg/etcd"
@@ -246,6 +246,7 @@ func buildCloudInstanceGroup(c ALICloud, ig *kops.InstanceGroup, g ess.ScalingGr
 		HumanName:     g.ScalingGroupName,
 		InstanceGroup: ig,
 		MinSize:       g.MinSize,
+		TargetSize:    g.MinSize, // TODO: Which is the appropriate field? Need to add DesiredCapacity field to ScalingGroupItemType?
 		MaxSize:       g.MaxSize,
 		Raw:           g,
 	}
@@ -274,7 +275,11 @@ func buildCloudInstanceGroup(c ALICloud, ig *kops.InstanceGroup, g ess.ScalingGr
 			klog.Warningf("ignoring instance with no instance id: %s", i)
 			continue
 		}
-		err := cg.NewCloudInstanceGroupMember(instanceId, newLaunchConfigName, i.ScalingConfigurationId, nodeMap)
+		status := cloudinstances.CloudInstanceStatusUpToDate
+		if newLaunchConfigName != i.ScalingConfigurationId {
+			status = cloudinstances.CloudInstanceStatusNeedsUpdate
+		}
+		_, err := cg.NewCloudInstance(instanceId, status, nodeMap)
 		if err != nil {
 			return nil, fmt.Errorf("error creating cloud instance group member: %v", err)
 		}

@@ -1,5 +1,5 @@
 /*
-Copyright 2016 The Kubernetes Authors.
+Copyright 2019 The Kubernetes Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -21,7 +21,7 @@ import (
 
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/ec2"
-	"k8s.io/klog"
+	"k8s.io/klog/v2"
 	"k8s.io/kops/upup/pkg/fi"
 	"k8s.io/kops/upup/pkg/fi/cloudup/awsup"
 )
@@ -65,7 +65,7 @@ func (e *InstanceVolumeAttachment) Find(c *fi.Context) (*InstanceVolumeAttachmen
 			Volume:   &EBSVolume{ID: bdm.Ebs.VolumeId},
 		}
 
-		klog.V(2).Infof("found matching InstanceVolumeAttachmen")
+		klog.V(2).Infof("found matching InstanceVolumeAttachment")
 		return actual, nil
 	}
 

@@ -18,19 +18,44 @@ package openstack
 
 import (
 	"fmt"
+	"time"
+
+	"github.com/gophercloud/gophercloud/openstack/compute/v2/flavors"
 
 	"github.com/gophercloud/gophercloud/openstack/compute/v2/servers"
+	"github.com/mitchellh/mapstructure"
 	"k8s.io/apimachinery/pkg/util/wait"
-	"k8s.io/klog"
+	"k8s.io/klog/v2"
 	"k8s.io/kops/pkg/cloudinstances"
+	"k8s.io/kops/upup/pkg/fi"
 	"k8s.io/kops/util/pkg/vfs"
 )
 
+const (
+	INSTANCE_GROUP_GENERATION = "ig_generation"
+	CLUSTER_GENERATION        = "cluster_generation"
+	OS_ANNOTATION             = "openstack.kops.io/"
+	BOOT_FROM_VOLUME          = "osVolumeBoot"
+	BOOT_VOLUME_SIZE          = "osVolumeSize"
+)
+
+// floatingBackoff is the backoff strategy for listing openstack floatingips
+var floatingBackoff = wait.Backoff{
+	Duration: time.Second,
+	Factor:   1.5,
+	Jitter:   0.1,
+	Steps:    20,
+}
+
 func (c *openstackCloud) CreateInstance(opt servers.CreateOptsBuilder) (*servers.Server, error) {
+	return createInstance(c, opt)
+}
+
+func createInstance(c OpenstackCloud, opt servers.CreateOptsBuilder) (*servers.Server, error) {
 	var server *servers.Server
 
 	done, err := vfs.RetryWithBackoff(writeBackoff, func() (bool, error) {
-		v, err := servers.Create(c.novaClient, opt).Extract()
+		v, err := servers.Create(c.ComputeClient(), opt).Extract()
 		if err != nil {
 			return false, fmt.Errorf("error creating server %v: %v", opt, err)
 		}
@@ -46,20 +71,82 @@ func (c *openstackCloud) CreateInstance(opt servers.CreateOptsBuilder) (*servers
 	}
 }
 
-func (c *openstackCloud) DeleteInstance(i *cloudinstances.CloudInstanceGroupMember) error {
-	klog.Warning("This does not work without running kops update cluster --yes in another terminal")
-	return c.DeleteInstanceWithID(i.ID)
+func (c *openstackCloud) ListServerFloatingIPs(instanceID string) ([]*string, error) {
+	return listServerFloatingIPs(c, instanceID, c.floatingEnabled)
+}
+
+func listServerFloatingIPs(c OpenstackCloud, instanceID string, floatingEnabled bool) ([]*string, error) {
+
+	var result []*string
+	_, err := vfs.RetryWithBackoff(floatingBackoff, func() (bool, error) {
+		server, err := c.GetInstance(instanceID)
+		if err != nil {
+			return true, fmt.Errorf("failed to find server with id (\"%s\"): %v", instanceID, err)
+		}
+
+		var addresses map[string][]Address
+		err = mapstructure.Decode(server.Addresses, &addresses)
+		if err != nil {
+			return true, err
+		}
+
+		for _, addrList := range addresses {
+			for _, props := range addrList {
+				if floatingEnabled {
+					if props.IPType == "floating" {
+						result = append(result, fi.String(props.Addr))
+					}
+				} else {
+					result = append(result, fi.String(props.Addr))
+				}
+			}
+		}
+		if len(result) > 0 {
+			return true, nil
+		}
+		return false, nil
+	})
+	if len(result) == 0 || err != nil {
+		return result, fmt.Errorf("could not find floating ip associated to server (\"%s\") %v", instanceID, err)
+	}
+	return result, nil
+}
+
+func (c *openstackCloud) DeleteInstance(i *cloudinstances.CloudInstance) error {
+	return deleteInstance(c, i)
+}
+
+func deleteInstance(c OpenstackCloud, i *cloudinstances.CloudInstance) error {
+	return deleteInstanceWithID(c, i.ID)
 }
 
 func (c *openstackCloud) DeleteInstanceWithID(instanceID string) error {
-	return servers.Delete(c.novaClient, instanceID).ExtractErr()
+	return deleteInstanceWithID(c, instanceID)
+}
+
+func deleteInstanceWithID(c OpenstackCloud, instanceID string) error {
+	return servers.Delete(c.ComputeClient(), instanceID).ExtractErr()
+}
+
+// DetachInstance is not implemented yet. It needs to cause a cloud instance to no longer be counted against the group's size limits.
+func (c *openstackCloud) DetachInstance(i *cloudinstances.CloudInstance) error {
+	return detachInstance(c, i)
+}
+
+func detachInstance(c OpenstackCloud, i *cloudinstances.CloudInstance) error {
+	klog.V(8).Info("openstack cloud provider DetachInstance not implemented yet")
+	return fmt.Errorf("openstack cloud provider does not support surging")
 }
 
 func (c *openstackCloud) GetInstance(id string) (*servers.Server, error) {
+	return getInstance(c, id)
+}
+
+func getInstance(c OpenstackCloud, id string) (*servers.Server, error) {
 	var server *servers.Server
 
 	done, err := vfs.RetryWithBackoff(readBackoff, func() (bool, error) {
-		instance, err := servers.Get(c.novaClient, id).Extract()
+		instance, err := servers.Get(c.ComputeClient(), id).Extract()
 		if err != nil {
 			return false, err
 		}
@@ -76,10 +163,14 @@ func (c *openstackCloud) GetInstance(id string) (*servers.Server, error) {
 }
 
 func (c *openstackCloud) ListInstances(opt servers.ListOptsBuilder) ([]servers.Server, error) {
+	return listInstances(c, opt)
+}
+
+func listInstances(c OpenstackCloud, opt servers.ListOptsBuilder) ([]servers.Server, error) {
 	var instances []servers.Server
 
 	done, err := vfs.RetryWithBackoff(readBackoff, func() (bool, error) {
-		allPages, err := servers.List(c.novaClient, opt).AllPages()
+		allPages, err := servers.List(c.ComputeClient(), opt).AllPages()
 		if err != nil {
 			return false, fmt.Errorf("error listing servers %v: %v", opt, err)
 		}
@@ -98,4 +189,30 @@ func (c *openstackCloud) ListInstances(opt servers.ListOptsBuilder) ([]servers.S
 	} else {
 		return instances, wait.ErrWaitTimeout
 	}
+}
+
+func (c *openstackCloud) GetFlavor(name string) (*flavors.Flavor, error) {
+	return getFlavor(c, name)
+}
+
+func getFlavor(c OpenstackCloud, name string) (*flavors.Flavor, error) {
+	opts := flavors.ListOpts{}
+	pager := flavors.ListDetail(c.ComputeClient(), opts)
+	page, err := pager.AllPages()
+	if err != nil {
+		return nil, fmt.Errorf("failed to list flavors: %v", err)
+	}
+
+	fs, err := flavors.ExtractFlavors(page)
+	if err != nil {
+		return nil, fmt.Errorf("failed to extract flavors: %v", err)
+	}
+	for _, f := range fs {
+		if f.Name == name {
+			return &f, nil
+		}
+	}
+
+	return nil, fmt.Errorf("could not find flavor with name %v", name)
+
 }

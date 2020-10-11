@@ -1,5 +1,5 @@
 /*
-Copyright 2016 The Kubernetes Authors.
+Copyright 2019 The Kubernetes Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -28,6 +28,11 @@ import (
 
 type Resource interface {
 	Open() (io.Reader, error)
+}
+
+// HasIsReady is implemented by Resources that are derived (and thus may not be ready at comparison time)
+type HasIsReady interface {
+	IsReady() bool
 }
 
 type TemplateResource interface {
@@ -199,14 +204,14 @@ func (r *VFSResource) Open() (io.Reader, error) {
 	return b, err
 }
 
-// ResourceHolder is used in JSON/YAML models; it holds a resource but renders to/from a string
-// After unmarshaling, the resource should be found by Name, and set on Resource
+// ResourceHolder is machinery leftover from when there were YAML models.
 type ResourceHolder struct {
 	Name     string
 	Resource Resource
 }
 
 var _ Resource = &ResourceHolder{}
+var _ HasDependencies = &ResourceHolder{}
 
 // Open implements the Open method of the Resource interface
 func (o *ResourceHolder) Open() (io.Reader, error) {
@@ -216,30 +221,21 @@ func (o *ResourceHolder) Open() (io.Reader, error) {
 	return o.Resource.Open()
 }
 
-// UnmarshalJSON implements the special JSON marshaling for the resource, rendering the name
-func (o *ResourceHolder) UnmarshalJSON(data []byte) error {
-	var jsonName string
-	err := json.Unmarshal(data, &jsonName)
-	if err != nil {
-		return err
+func (r *ResourceHolder) GetDependencies(tasks map[string]Task) []Task {
+	if hasDependencies, ok := r.Resource.(HasDependencies); ok {
+		return hasDependencies.GetDependencies(tasks)
 	}
-	o.Name = jsonName
 	return nil
-}
-
-// Unwrap returns the underlying resource
-func (o *ResourceHolder) Unwrap() Resource {
-	return o.Resource
 }
 
 // AsString returns the value of the resource as a string
 func (o *ResourceHolder) AsString() (string, error) {
-	return ResourceAsString(o.Unwrap())
+	return ResourceAsString(o.Resource)
 }
 
 // AsString returns the value of the resource as a byte-slice
 func (o *ResourceHolder) AsBytes() ([]byte, error) {
-	return ResourceAsBytes(o.Unwrap())
+	return ResourceAsBytes(o.Resource)
 }
 
 // WrapResource creates a ResourceHolder for the specified resource
@@ -247,4 +243,29 @@ func WrapResource(r Resource) *ResourceHolder {
 	return &ResourceHolder{
 		Resource: r,
 	}
+}
+
+type TaskDependentResource struct {
+	Resource Resource `json:"resource,omitempty"`
+	Task     Task     `json:"task,omitempty"`
+}
+
+var _ Resource = &TaskDependentResource{}
+var _ HasDependencies = &TaskDependentResource{}
+var _ HasIsReady = &TaskDependentResource{}
+
+func (r *TaskDependentResource) Open() (io.Reader, error) {
+	if r.Resource == nil {
+		return nil, fmt.Errorf("resource opened before it is ready (task=%v)", r.Task)
+	}
+	return r.Resource.Open()
+}
+
+func (r *TaskDependentResource) GetDependencies(tasks map[string]Task) []Task {
+	return []Task{r.Task}
+}
+
+// IsReady implements HasIsReady::IsReady
+func (r *TaskDependentResource) IsReady() bool {
+	return r.Resource != nil
 }

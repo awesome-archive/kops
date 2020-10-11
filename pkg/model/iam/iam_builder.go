@@ -34,9 +34,9 @@ import (
 	"strings"
 
 	"k8s.io/apimachinery/pkg/util/sets"
-	"k8s.io/klog"
-
+	"k8s.io/klog/v2"
 	"k8s.io/kops/pkg/apis/kops"
+	"k8s.io/kops/pkg/apis/kops/model"
 	"k8s.io/kops/pkg/util/stringorslice"
 	"k8s.io/kops/upup/pkg/fi"
 	"k8s.io/kops/upup/pkg/fi/cloudup/awstasks"
@@ -77,9 +77,110 @@ type Condition map[string]interface{}
 // http://docs.aws.amazon.com/IAM/latest/UserGuide/reference_policies_elements.html#Statement
 type Statement struct {
 	Effect    StatementEffect
+	Principal Principal
 	Action    stringorslice.StringOrSlice
 	Resource  stringorslice.StringOrSlice
-	Condition Condition `json:",omitempty"`
+	Condition Condition
+}
+
+type jsonWriter struct {
+	w   io.Writer
+	err error
+}
+
+func (j *jsonWriter) Error() error {
+	return j.err
+}
+
+func (j *jsonWriter) WriteLiteral(b []byte) {
+	if j.err != nil {
+		return
+	}
+	_, err := j.w.Write(b)
+	if err != nil {
+		j.err = err
+	}
+}
+
+func (j *jsonWriter) StartObject() {
+	j.WriteLiteral([]byte("{"))
+}
+
+func (j *jsonWriter) EndObject() {
+	j.WriteLiteral([]byte("}"))
+}
+
+func (j *jsonWriter) Comma() {
+	j.WriteLiteral([]byte(","))
+}
+
+func (j *jsonWriter) Field(s string) {
+	if j.err != nil {
+		return
+	}
+	b, err := json.Marshal(s)
+	if err != nil {
+		j.err = err
+		return
+	}
+	j.WriteLiteral(b)
+	j.WriteLiteral([]byte(": "))
+}
+
+func (j *jsonWriter) Marshal(v interface{}) {
+	if j.err != nil {
+		return
+	}
+	b, err := json.Marshal(v)
+	if err != nil {
+		j.err = err
+		return
+	}
+	j.WriteLiteral(b)
+}
+
+// MarshalJSON formats the IAM statement for the AWS IAM restrictions.
+// For example, `Resource: []` is not allowed, but golang would force us to use pointers.
+func (s *Statement) MarshalJSON() ([]byte, error) {
+	var b bytes.Buffer
+
+	jw := &jsonWriter{w: &b}
+	jw.StartObject()
+	jw.Field("Effect")
+	jw.Marshal(s.Effect)
+
+	if !s.Principal.IsEmpty() {
+		jw.Comma()
+		jw.Field("Principal")
+		jw.Marshal(s.Principal)
+	}
+	if !s.Action.IsEmpty() {
+		jw.Comma()
+		jw.Field("Action")
+		jw.Marshal(s.Action)
+	}
+	if !s.Resource.IsEmpty() {
+		jw.Comma()
+		jw.Field("Resource")
+		jw.Marshal(s.Resource)
+	}
+	if len(s.Condition) != 0 {
+		jw.Comma()
+		jw.Field("Condition")
+		jw.Marshal(s.Condition)
+	}
+	jw.EndObject()
+
+	return b.Bytes(), jw.Error()
+}
+
+type Principal struct {
+	Federated string `json:",omitempty"`
+	Service   string `json:",omitempty"`
+}
+
+func (p *Principal) IsEmpty() bool {
+	return *p == Principal{}
 }
 
 // Equal compares two IAM Statements and returns a bool
@@ -100,20 +201,18 @@ func (l *Statement) Equal(r *Statement) bool {
 // PolicyBuilder struct defines all valid fields to be used when building the
 // AWS IAM policy document for a given instance group role.
 type PolicyBuilder struct {
-	Cluster      *kops.Cluster
-	HostedZoneID string
-	KMSKeys      []string
-	Region       string
-	ResourceARN  *string
-	Role         kops.InstanceGroupRole
+	Cluster              *kops.Cluster
+	HostedZoneID         string
+	KMSKeys              []string
+	Region               string
+	ResourceARN          *string
+	Role                 Subject
+	UseServiceAccountIAM bool
 }
 
 // BuildAWSPolicy builds a set of IAM policy statements based on the
 // instance group type and IAM Legacy flag within the Cluster Spec
 func (b *PolicyBuilder) BuildAWSPolicy() (*Policy, error) {
-	var p *Policy
-	var err error
-
 	// Retrieve all the KMS Keys in use
 	for _, e := range b.Cluster.Spec.EtcdClusters {
 		for _, m := range e.Members {
@@ -123,31 +222,16 @@ func (b *PolicyBuilder) BuildAWSPolicy() (*Policy, error) {
 		}
 	}
 
-	switch b.Role {
-	case kops.InstanceGroupRoleBastion:
-		p, err = b.BuildAWSPolicyBastion()
-		if err != nil {
-			return nil, fmt.Errorf("failed to generate AWS IAM Policy for Bastion Instance Group: %v", err)
-		}
-	case kops.InstanceGroupRoleNode:
-		p, err = b.BuildAWSPolicyNode()
-		if err != nil {
-			return nil, fmt.Errorf("failed to generate AWS IAM Policy for Node Instance Group: %v", err)
-		}
-	case kops.InstanceGroupRoleMaster:
-		p, err = b.BuildAWSPolicyMaster()
-		if err != nil {
-			return nil, fmt.Errorf("failed to generate AWS IAM Policy for Master Instance Group: %v", err)
-		}
-	default:
-		return nil, fmt.Errorf("unrecognised instance group type: %s", b.Role)
+	p, err := b.Role.BuildAWSPolicy(b)
+	if err != nil {
+		return nil, fmt.Errorf("failed to generate AWS IAM Policy: %v", err)
 	}
 
 	return p, nil
 }
 
-// BuildAWSPolicyMaster generates a custom policy for a Kubernetes master.
-func (b *PolicyBuilder) BuildAWSPolicyMaster() (*Policy, error) {
+// BuildAWSPolicy generates a custom policy for a Kubernetes master.
+func (r *NodeRoleMaster) BuildAWSPolicy(b *PolicyBuilder) (*Policy, error) {
 	resource := createResource(b)
 
 	p := &Policy{
@@ -168,20 +252,15 @@ func (b *PolicyBuilder) BuildAWSPolicyMaster() (*Policy, error) {
 		addKMSIAMPolicies(p, stringorslice.Slice(b.KMSKeys), b.Cluster.Spec.IAM.Legacy)
 	}
 
-	if b.HostedZoneID != "" {
-		addRoute53Permissions(p, b.HostedZoneID)
-	}
-
-	if b.Cluster.Spec.IAM.Legacy {
-		addRoute53ListHostedZonesPermission(p)
+	if !b.UseServiceAccountIAM {
+		if b.Cluster.Spec.IAM.Legacy {
+			addLegacyDNSControllerPermissions(b, p)
+		}
+		AddDNSControllerPermissions(b, p)
 	}
 
 	if b.Cluster.Spec.IAM.Legacy || b.Cluster.Spec.IAM.AllowContainerRegistry {
 		addECRPermissions(p)
-	}
-
-	if b.Cluster.Spec.Networking != nil && b.Cluster.Spec.Networking.Romana != nil {
-		addRomanaCNIPermissions(p, resource, b.Cluster.Spec.IAM.Legacy, b.Cluster.GetName())
 	}
 
 	if b.Cluster.Spec.Networking != nil && b.Cluster.Spec.Networking.AmazonVPC != nil {
@@ -192,11 +271,19 @@ func (b *PolicyBuilder) BuildAWSPolicyMaster() (*Policy, error) {
 		addLyftVPCPermissions(p, resource, b.Cluster.Spec.IAM.Legacy, b.Cluster.GetName())
 	}
 
+	if b.Cluster.Spec.Networking != nil && b.Cluster.Spec.Networking.Cilium != nil && b.Cluster.Spec.Networking.Cilium.Ipam == kops.CiliumIpamEni {
+		addCiliumEniPermissions(p, resource, b.Cluster.Spec.IAM.Legacy)
+	}
+
+	if b.Cluster.Spec.Networking != nil && b.Cluster.Spec.Networking.Calico != nil && (b.Cluster.Spec.Networking.Calico.CrossSubnet || b.Cluster.Spec.Networking.Calico.AwsSrcDstCheck != "") {
+		addCalicoSrcDstCheckPermissions(p)
+	}
+
 	return p, nil
 }
 
-// BuildAWSPolicyNode generates a custom policy for a Kubernetes node.
-func (b *PolicyBuilder) BuildAWSPolicyNode() (*Policy, error) {
+// BuildAWSPolicy generates a custom policy for a Kubernetes node.
+func (r *NodeRoleNode) BuildAWSPolicy(b *PolicyBuilder) (*Policy, error) {
 	resource := createResource(b)
 
 	p := &Policy{
@@ -210,11 +297,9 @@ func (b *PolicyBuilder) BuildAWSPolicyNode() (*Policy, error) {
 		return nil, fmt.Errorf("failed to generate AWS IAM S3 access statements: %v", err)
 	}
 
-	if b.Cluster.Spec.IAM.Legacy {
-		if b.HostedZoneID != "" {
-			addRoute53Permissions(p, b.HostedZoneID)
-		}
-		addRoute53ListHostedZonesPermission(p)
+	if !b.UseServiceAccountIAM && b.Cluster.Spec.IAM.Legacy {
+		addLegacyDNSControllerPermissions(b, p)
+		AddDNSControllerPermissions(b, p)
 	}
 
 	if b.Cluster.Spec.IAM.Legacy || b.Cluster.Spec.IAM.AllowContainerRegistry {
@@ -229,11 +314,15 @@ func (b *PolicyBuilder) BuildAWSPolicyNode() (*Policy, error) {
 		addLyftVPCPermissions(p, resource, b.Cluster.Spec.IAM.Legacy, b.Cluster.GetName())
 	}
 
+	if b.Cluster.Spec.Networking != nil && b.Cluster.Spec.Networking.Calico != nil && (b.Cluster.Spec.Networking.Calico.CrossSubnet || b.Cluster.Spec.Networking.Calico.AwsSrcDstCheck != "") {
+		addCalicoSrcDstCheckPermissions(p)
+	}
+
 	return p, nil
 }
 
-// BuildAWSPolicyBastion generates a custom policy for a bastion host.
-func (b *PolicyBuilder) BuildAWSPolicyBastion() (*Policy, error) {
+// BuildAWSPolicy generates a custom policy for a bastion host.
+func (r *NodeRoleBastion) BuildAWSPolicy(b *PolicyBuilder) (*Policy, error) {
 	resource := createResource(b)
 
 	p := &Policy{
@@ -259,6 +348,8 @@ func (b *PolicyBuilder) IAMPrefix() string {
 		return "arn:aws-cn"
 	case "cn-northwest-1":
 		return "arn:aws-cn"
+	case "us-gov-east-1":
+		return "arn:aws-us-gov"
 	case "us-gov-west-1":
 		return "arn:aws-us-gov"
 	default:
@@ -266,8 +357,8 @@ func (b *PolicyBuilder) IAMPrefix() string {
 	}
 }
 
-// AddS3Permissions updates an IAM Policy with statements granting tailored
-// access to S3 assets, depending on the instance group role
+// AddS3Permissions builds an IAM Policy, with statements granting tailored
+// access to S3 assets, depending on the instance group or service-account role
 func (b *PolicyBuilder) AddS3Permissions(p *Policy) (*Policy, error) {
 	// For S3 IAM permissions we grant permissions to subtrees, so find the parents;
 	// we don't need to grant mypath and mypath/child.
@@ -310,6 +401,8 @@ func (b *PolicyBuilder) AddS3Permissions(p *Policy) (*Policy, error) {
 
 	sort.Strings(roots)
 
+	s3Buckets := sets.NewString()
+
 	for _, root := range roots {
 		vfsPath, err := vfs.Context.BuildVfsPath(root)
 		if err != nil {
@@ -320,13 +413,7 @@ func (b *PolicyBuilder) AddS3Permissions(p *Policy) (*Policy, error) {
 			iamS3Path := s3Path.Bucket() + "/" + s3Path.Key()
 			iamS3Path = strings.TrimSuffix(iamS3Path, "/")
 
-			p.Statement = append(p.Statement, &Statement{
-				Effect: StatementEffectAllow,
-				Action: stringorslice.Of("s3:GetBucketLocation", "s3:GetEncryptionConfiguration", "s3:ListBucket"),
-				Resource: stringorslice.Slice([]string{
-					strings.Join([]string{b.IAMPrefix(), ":s3:::", s3Path.Bucket()}, ""),
-				}),
-			})
+			s3Buckets.Insert(s3Path.Bucket())
 
 			if b.Cluster.Spec.IAM.Legacy {
 				p.Statement = append(p.Statement, &Statement{
@@ -337,69 +424,32 @@ func (b *PolicyBuilder) AddS3Permissions(p *Policy) (*Policy, error) {
 					),
 				})
 			} else {
-				if b.Role == kops.InstanceGroupRoleMaster {
-					p.Statement = append(p.Statement, &Statement{
-						Effect: StatementEffectAllow,
-						Action: stringorslice.Slice([]string{"s3:Get*"}),
-						Resource: stringorslice.Of(
-							strings.Join([]string{b.IAMPrefix(), ":s3:::", iamS3Path, "/*"}, ""),
-						),
-					})
-				} else if b.Role == kops.InstanceGroupRoleNode {
-					resources := []string{
-						strings.Join([]string{b.IAMPrefix(), ":s3:::", iamS3Path, "/addons/*"}, ""),
-						strings.Join([]string{b.IAMPrefix(), ":s3:::", iamS3Path, "/cluster.spec"}, ""),
-						strings.Join([]string{b.IAMPrefix(), ":s3:::", iamS3Path, "/config"}, ""),
-						strings.Join([]string{b.IAMPrefix(), ":s3:::", iamS3Path, "/instancegroup/*"}, ""),
-						strings.Join([]string{b.IAMPrefix(), ":s3:::", iamS3Path, "/pki/issued/*"}, ""),
-						strings.Join([]string{b.IAMPrefix(), ":s3:::", iamS3Path, "/pki/private/kube-proxy/*"}, ""),
-						strings.Join([]string{b.IAMPrefix(), ":s3:::", iamS3Path, "/pki/ssh/*"}, ""),
-						strings.Join([]string{b.IAMPrefix(), ":s3:::", iamS3Path, "/secrets/dockerconfig"}, ""),
-					}
+				resources, err := ReadableStatePaths(b.Cluster, b.Role)
+				if err != nil {
+					return nil, err
+				}
 
-					// @check if bootstrap tokens are enabled and if so enable access to client certificate
-					if b.UseBootstrapTokens() {
-						resources = append(resources, strings.Join([]string{b.IAMPrefix(), ":s3:::", iamS3Path, "/pki/private/node-authorizer-client/*"}, ""))
-					} else {
-						resources = append(resources, strings.Join([]string{b.IAMPrefix(), ":s3:::", iamS3Path, "/pki/private/kubelet/*"}, ""))
-					}
-
+				if len(resources) != 0 {
 					sort.Strings(resources)
+
+					// Add the prefix for IAM
+					for i, r := range resources {
+						resources[i] = b.IAMPrefix() + ":s3:::" + iamS3Path + r
+					}
 
 					p.Statement = append(p.Statement, &Statement{
 						Effect:   StatementEffectAllow,
 						Action:   stringorslice.Slice([]string{"s3:Get*"}),
 						Resource: stringorslice.Of(resources...),
 					})
-
-					if b.Cluster.Spec.Networking != nil {
-						// @check if kuberoute is enabled and permit access to the private key
-						if b.Cluster.Spec.Networking.Kuberouter != nil {
-							p.Statement = append(p.Statement, &Statement{
-								Effect: StatementEffectAllow,
-								Action: stringorslice.Slice([]string{"s3:Get*"}),
-								Resource: stringorslice.Of(
-									strings.Join([]string{b.IAMPrefix(), ":s3:::", iamS3Path, "/pki/private/kube-router/*"}, ""),
-								),
-							})
-						}
-
-						// @check if calico is enabled as the CNI provider and permit access to the client TLS certificate by default
-						if b.Cluster.Spec.Networking.Calico != nil || b.Cluster.Spec.Networking.Cilium != nil {
-							p.Statement = append(p.Statement, &Statement{
-								Effect: StatementEffectAllow,
-								Action: stringorslice.Slice([]string{"s3:Get*"}),
-								Resource: stringorslice.Of(
-									strings.Join([]string{b.IAMPrefix(), ":s3:::", iamS3Path, "/pki/private/calico-client/*"}, ""),
-								),
-							})
-						}
-					}
 				}
 			}
 		} else if _, ok := vfsPath.(*vfs.MemFSPath); ok {
 			// Tests -ignore - nothing we can do in terms of IAM policy
 			klog.Warningf("ignoring memfs path %q for IAM policy builder", vfsPath)
+		} else if _, ok := vfsPath.(*vfs.VaultPath); ok {
+			// Vault access needs to come from somewhere else
+			klog.Warningf("ignoring valult path %q for IAM policy builder", vfsPath)
 		} else {
 			// We could implement this approach, but it seems better to
 			// get all clouds using cluster-readable storage
@@ -419,24 +469,48 @@ func (b *PolicyBuilder) AddS3Permissions(p *Policy) (*Policy, error) {
 
 			p.Statement = append(p.Statement, &Statement{
 				Effect: StatementEffectAllow,
-				Action: stringorslice.Slice([]string{"s3:GetObject", "s3:DeleteObject", "s3:PutObject"}),
+				Action: stringorslice.Slice([]string{
+					"s3:GetObject",
+					"s3:DeleteObject",
+					"s3:DeleteObjectVersion",
+					"s3:PutObject",
+				}),
 				Resource: stringorslice.Of(
 					strings.Join([]string{b.IAMPrefix(), ":s3:::", iamS3Path, "/*"}, ""),
 				),
 			})
+
+			s3Buckets.Insert(s3Path.Bucket())
 		} else {
 			klog.Warningf("unknown writeable path, can't apply IAM policy: %q", vfsPath)
 		}
 	}
 
+	// We need some permissions on the buckets themselves
+	for _, s3Bucket := range s3Buckets.List() {
+		p.Statement = append(p.Statement, &Statement{
+			Effect: StatementEffectAllow,
+			Action: stringorslice.Of(
+				"s3:GetBucketLocation",
+				"s3:GetEncryptionConfiguration",
+				"s3:ListBucket",
+				"s3:ListBucketVersions",
+			),
+			Resource: stringorslice.Slice([]string{
+				strings.Join([]string{b.IAMPrefix(), ":s3:::", s3Bucket}, ""),
+			}),
+		})
+	}
+
 	return p, nil
 }
 
-func WriteableVFSPaths(cluster *kops.Cluster, role kops.InstanceGroupRole) ([]vfs.Path, error) {
+func WriteableVFSPaths(cluster *kops.Cluster, role Subject) ([]vfs.Path, error) {
 	var paths []vfs.Path
 
-	// On the master, grant IAM permissions to the backup store, if it is configured
-	if role == kops.InstanceGroupRoleMaster {
+	// etcd-manager needs write permissions to the backup store
+	switch role.(type) {
+	case *NodeRoleMaster:
 		backupStores := sets.NewString()
 		for _, c := range cluster.Spec.EtcdClusters {
 			if c.Backups == nil || c.Backups.BackupStore == "" || backupStores.Has(c.Backups.BackupStore) {
@@ -452,6 +526,73 @@ func WriteableVFSPaths(cluster *kops.Cluster, role kops.InstanceGroupRole) ([]vf
 			paths = append(paths, vfsPath)
 
 			backupStores.Insert(backupStore)
+		}
+	}
+
+	return paths, nil
+}
+
+// ReadableStatePaths returns the file paths that should be readable in the cluster's state store "directory"
+func ReadableStatePaths(cluster *kops.Cluster, role Subject) ([]string, error) {
+	var paths []string
+
+	switch role.(type) {
+	case *NodeRoleMaster:
+		paths = append(paths, "/*")
+
+	case *NodeRoleNode:
+		paths = append(paths,
+			"/addons/*",
+			"/cluster.spec",
+			"/config",
+			"/instancegroup/*",
+			"/pki/issued/*",
+			"/pki/ssh/*",
+			"/secrets/dockerconfig",
+		)
+
+		// Give access to keys for client certificates as needed.
+		if !model.UseKopsControllerForNodeBootstrap(cluster) {
+			paths = append(paths, "/pki/private/kube-proxy/*")
+
+			if useBootstrapTokens(cluster) {
+				paths = append(paths, "/pki/private/node-authorizer-client/*")
+			} else {
+				paths = append(paths, "/pki/private/kubelet/*")
+			}
+
+			networkingSpec := cluster.Spec.Networking
+
+			if networkingSpec != nil {
+				// @check if kuberoute is enabled and permit access to the private key
+				if networkingSpec.Kuberouter != nil {
+					paths = append(paths, "/pki/private/kube-router/*")
+				}
+
+				// @check if calico is enabled as the CNI provider and permit access to the client TLS certificate by default
+				if cluster.IsKubernetesLT("1.12") && networkingSpec.Calico != nil {
+					calicoClientCert := false
+					for _, x := range cluster.Spec.EtcdClusters {
+						if x.Provider == kops.EtcdProviderTypeManager {
+							calicoClientCert = false
+							break
+						}
+						if x.EnableEtcdTLS {
+							calicoClientCert = true
+						}
+					}
+
+					if calicoClientCert {
+						paths = append(paths, "/pki/private/calico-client/*")
+					}
+				}
+
+				// @check if cilium is enabled as the CNI provider and permit access to the cilium etc client TLS certificate by default
+				// As long as the Cilium Etcd cluster exists, we should do this
+				if networkingSpec.Cilium != nil && model.UseCiliumEtcd(cluster) {
+					paths = append(paths, "/pki/private/etcd-clients-ca-cilium/*")
+				}
+			}
 		}
 	}
 	return paths, nil
@@ -501,14 +642,14 @@ func (b *PolicyResource) Open() (io.Reader, error) {
 	return bytes.NewReader([]byte(j)), nil
 }
 
-// UseBootstrapTokens check if we are using bootstrap tokens - @TODO, i don't like this we should probably pass in
+// useBootstrapTokens check if we are using bootstrap tokens - @TODO, i don't like this we should probably pass in
 // the kops model into the builder rather than duplicating the code. I'll leave for another PR
-func (b *PolicyBuilder) UseBootstrapTokens() bool {
-	if b.Cluster.Spec.KubeAPIServer == nil {
+func useBootstrapTokens(cluster *kops.Cluster) bool {
+	if cluster.Spec.KubeAPIServer == nil {
 		return false
 	}
 
-	return fi.BoolValue(b.Cluster.Spec.KubeAPIServer.EnableBootstrapAuthToken)
+	return fi.BoolValue(cluster.Spec.KubeAPIServer.EnableBootstrapAuthToken)
 }
 
 func addECRPermissions(p *Policy) {
@@ -534,12 +675,39 @@ func addECRPermissions(p *Policy) {
 	})
 }
 
-func addRoute53Permissions(p *Policy, hostedZoneID string) {
+func addCalicoSrcDstCheckPermissions(p *Policy) {
+	p.Statement = append(p.Statement, &Statement{
+		Effect: StatementEffectAllow,
+		Action: stringorslice.Of(
+			"ec2:DescribeInstances",
+			"ec2:ModifyNetworkInterfaceAttribute",
+		),
+		Resource: stringorslice.Slice([]string{"*"}),
+	})
+}
+
+// addLegacyDNSControllerPermissions adds legacy IAM permissions used by the node roles.
+func addLegacyDNSControllerPermissions(b *PolicyBuilder, p *Policy) {
+	// Legacy IAM permissions for node roles
+	wildcard := stringorslice.Slice([]string{"*"})
+	p.Statement = append(p.Statement, &Statement{
+		Effect:   StatementEffectAllow,
+		Action:   stringorslice.Slice([]string{"route53:ListHostedZones"}),
+		Resource: wildcard,
+	})
+}
+
+// AddDNSControllerPermissions adds IAM permissions used by the dns-controller.
+// TODO: Move this to dnscontroller, but it requires moving a lot of code around.
+func AddDNSControllerPermissions(b *PolicyBuilder, p *Policy) {
+	// Permissions to mutate the specific zone
+	if b.HostedZoneID == "" {
+		return
+	}
 
 	// TODO: Route53 currently not supported in China, need to check and fail/return
-
 	// Remove /hostedzone/ prefix (if present)
-	hostedZoneID = strings.TrimPrefix(hostedZoneID, "/")
+	hostedZoneID := strings.TrimPrefix(b.HostedZoneID, "/")
 	hostedZoneID = strings.TrimPrefix(hostedZoneID, "hostedzone/")
 
 	p.Statement = append(p.Statement, &Statement{
@@ -547,13 +715,13 @@ func addRoute53Permissions(p *Policy, hostedZoneID string) {
 		Action: stringorslice.Of("route53:ChangeResourceRecordSets",
 			"route53:ListResourceRecordSets",
 			"route53:GetHostedZone"),
-		Resource: stringorslice.Slice([]string{"arn:aws:route53:::hostedzone/" + hostedZoneID}),
+		Resource: stringorslice.Slice([]string{b.IAMPrefix() + ":route53:::hostedzone/" + hostedZoneID}),
 	})
 
 	p.Statement = append(p.Statement, &Statement{
 		Effect:   StatementEffectAllow,
 		Action:   stringorslice.Slice([]string{"route53:GetChange"}),
-		Resource: stringorslice.Slice([]string{"arn:aws:route53:::change/*"}),
+		Resource: stringorslice.Slice([]string{b.IAMPrefix() + ":route53:::change/*"}),
 	})
 
 	wildcard := stringorslice.Slice([]string{"*"})
@@ -627,12 +795,14 @@ func addMasterEC2Policies(p *Policy, resource stringorslice.StringOrSlice, legac
 			&Statement{
 				Effect: StatementEffectAllow,
 				Action: stringorslice.Slice([]string{
-					"ec2:DescribeInstances",      // aws.go
-					"ec2:DescribeRegions",        // s3context.go
-					"ec2:DescribeRouteTables",    // aws.go
-					"ec2:DescribeSecurityGroups", // aws.go
-					"ec2:DescribeSubnets",        // aws.go
-					"ec2:DescribeVolumes",        // aws.go
+					"ec2:DescribeAccountAttributes", // aws.go
+					"ec2:DescribeInstances",         // aws.go
+					"ec2:DescribeInternetGateways",  // aws.go
+					"ec2:DescribeRegions",           // s3context.go
+					"ec2:DescribeRouteTables",       // aws.go
+					"ec2:DescribeSecurityGroups",    // aws.go
+					"ec2:DescribeSubnets",           // aws.go
+					"ec2:DescribeVolumes",           // aws.go
 				}),
 				Resource: resource,
 			},
@@ -787,50 +957,36 @@ func addCertIAMPolicies(p *Policy, resource stringorslice.StringOrSlice) {
 	})
 }
 
-func addRoute53ListHostedZonesPermission(p *Policy) {
-	wildcard := stringorslice.Slice([]string{"*"})
-	p.Statement = append(p.Statement, &Statement{
-		Effect:   StatementEffectAllow,
-		Action:   stringorslice.Slice([]string{"route53:ListHostedZones"}),
-		Resource: wildcard,
-	})
-}
-
-func addRomanaCNIPermissions(p *Policy, resource stringorslice.StringOrSlice, legacyIAM bool, clusterName string) {
+func addLyftVPCPermissions(p *Policy, resource stringorslice.StringOrSlice, legacyIAM bool, clusterName string) {
 	if legacyIAM {
 		// Legacy IAM provides ec2:*, so no additional permissions required
 		return
 	}
 
-	// Romana requires additional Describe permissions
-	// Comments are which Romana component makes the call
 	p.Statement = append(p.Statement,
 		&Statement{
 			Effect: StatementEffectAllow,
 			Action: stringorslice.Slice([]string{
-				"ec2:DescribeAvailabilityZones", // vpcrouter
-				"ec2:DescribeVpcs",              // vpcrouter
+				"ec2:AssignPrivateIpAddresses",
+				"ec2:AttachNetworkInterface",
+				"ec2:CreateNetworkInterface",
+				"ec2:DeleteNetworkInterface",
+				"ec2:DescribeInstanceTypes",
+				"ec2:DescribeNetworkInterfaces",
+				"ec2:DescribeSecurityGroups",
+				"ec2:DescribeSubnets",
+				"ec2:DescribeVpcPeeringConnections",
+				"ec2:DescribeVpcs",
+				"ec2:DetachNetworkInterface",
+				"ec2:ModifyNetworkInterfaceAttribute",
+				"ec2:UnassignPrivateIpAddresses",
 			}),
 			Resource: resource,
-		},
-		&Statement{
-			Effect: StatementEffectAllow,
-			Action: stringorslice.Slice([]string{
-				"ec2:CreateRoute",  // vpcrouter
-				"ec2:DeleteRoute",  // vpcrouter
-				"ec2:ReplaceRoute", // vpcrouter
-			}),
-			Resource: resource,
-			Condition: Condition{
-				"StringEquals": map[string]string{
-					"ec2:ResourceTag/KubernetesCluster": clusterName,
-				},
-			},
 		},
 	)
 }
 
-func addLyftVPCPermissions(p *Policy, resource stringorslice.StringOrSlice, legacyIAM bool, clusterName string) {
+func addCiliumEniPermissions(p *Policy, resource stringorslice.StringOrSlice, legacyIAM bool) {
 	if legacyIAM {
 		// Legacy IAM provides ec2:*, so no additional permissions required
 		return
@@ -851,6 +1007,7 @@ func addLyftVPCPermissions(p *Policy, resource stringorslice.StringOrSlice, lega
 				"ec2:DetachNetworkInterface",
 				"ec2:DeleteNetworkInterface",
 				"ec2:ModifyNetworkInterfaceAttribute",
+				"ec2:DescribeVpcs",
 			}),
 			Resource: resource,
 		},
@@ -867,15 +1024,17 @@ func addAmazonVPCCNIPermissions(p *Policy, resource stringorslice.StringOrSlice,
 		&Statement{
 			Effect: StatementEffectAllow,
 			Action: stringorslice.Slice([]string{
-				"ec2:CreateNetworkInterface",
-				"ec2:AttachNetworkInterface",
-				"ec2:DeleteNetworkInterface",
-				"ec2:DetachNetworkInterface",
-				"ec2:DescribeNetworkInterfaces",
-				"ec2:DescribeInstances",
-				"ec2:ModifyNetworkInterfaceAttribute",
 				"ec2:AssignPrivateIpAddresses",
-				"tag:TagResources",
+				"ec2:AttachNetworkInterface",
+				"ec2:CreateNetworkInterface",
+				"ec2:DeleteNetworkInterface",
+				"ec2:DescribeInstances",
+				"ec2:DescribeInstanceTypes",
+				"ec2:DescribeTags",
+				"ec2:DescribeNetworkInterfaces",
+				"ec2:DetachNetworkInterface",
+				"ec2:ModifyNetworkInterfaceAttribute",
+				"ec2:UnassignPrivateIpAddresses",
 			}),
 			Resource: resource,
 		},

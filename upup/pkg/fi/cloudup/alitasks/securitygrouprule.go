@@ -1,5 +1,5 @@
 /*
-Copyright 2018 The Kubernetes Authors.
+Copyright 2019 The Kubernetes Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -18,18 +18,18 @@ package alitasks
 
 import (
 	"fmt"
+	"strings"
 
 	"github.com/denverdino/aliyungo/common"
 	"github.com/denverdino/aliyungo/ecs"
-	"k8s.io/klog"
+	"k8s.io/klog/v2"
 
 	"k8s.io/kops/upup/pkg/fi"
 	"k8s.io/kops/upup/pkg/fi/cloudup/aliup"
 	"k8s.io/kops/upup/pkg/fi/cloudup/terraform"
 )
 
-//go:generate fitask -type=SecurityGroupRule
-
+// +kops:fitask
 type SecurityGroupRule struct {
 	Name          *string
 	IpProtocol    *string
@@ -56,7 +56,7 @@ func (s *SecurityGroupRule) Find(c *fi.Context) (*SecurityGroupRule, error) {
 	cloud := c.Cloud.(aliup.ALICloud)
 	var direction ecs.Direction
 
-	if fi.BoolValue(s.In) == true {
+	if fi.BoolValue(s.In) {
 		direction = ecs.DirectionIngress
 	} else {
 		direction = ecs.DirectionEgress
@@ -74,14 +74,14 @@ func (s *SecurityGroupRule) Find(c *fi.Context) (*SecurityGroupRule, error) {
 	}
 
 	if len(describeResponse.Permissions.Permission) == 0 {
+		klog.V(2).Infof("can't find any security rule in security group: %q", fi.StringValue(s.SecurityGroup.SecurityGroupId))
 		return nil, nil
 	}
 
 	actual := &SecurityGroupRule{}
 	// Find securityGroupRule with specified ipProtocol, securityGroupId,SourceGroupId
 	for _, securityGroupRule := range describeResponse.Permissions.Permission {
-
-		if securityGroupRule.IpProtocol != ecs.IpProtocol(fi.StringValue(s.IpProtocol)) {
+		if !strings.EqualFold(string(securityGroupRule.IpProtocol), fi.StringValue(s.IpProtocol)) {
 			continue
 		}
 		if s.SourceGroup != nil && securityGroupRule.SourceGroupId != fi.StringValue(s.SourceGroup.SecurityGroupId) {
@@ -94,11 +94,12 @@ func (s *SecurityGroupRule) Find(c *fi.Context) (*SecurityGroupRule, error) {
 			continue
 		}
 
-		klog.V(2).Infof("found matching SecurityGroupRule of securityGroup: %q", *s.SecurityGroup.SecurityGroupId)
+		klog.V(2).Infof("found matching SecurityGroupRule of securityGroup: %q", fi.StringValue(s.SecurityGroup.SecurityGroupId))
 
 		actual.PortRange = fi.String(securityGroupRule.PortRange)
 		actual.SourceCidrIp = fi.String(securityGroupRule.SourceCidrIp)
-		actual.IpProtocol = fi.String(string(securityGroupRule.IpProtocol))
+		actual.IpProtocol = fi.String(strings.ToLower(string(securityGroupRule.IpProtocol)))
+
 		// Ignore "system" fields
 		actual.Name = s.Name
 		actual.SecurityGroup = s.SecurityGroup
@@ -107,9 +108,7 @@ func (s *SecurityGroupRule) Find(c *fi.Context) (*SecurityGroupRule, error) {
 		actual.SourceGroup = s.SourceGroup
 
 		return actual, nil
-
 	}
-
 	return nil, nil
 }
 
@@ -140,7 +139,7 @@ func (_ *SecurityGroupRule) CheckChanges(a, e, changes *SecurityGroupRule) error
 func (_ *SecurityGroupRule) RenderALI(t *aliup.ALIAPITarget, a, e, changes *SecurityGroupRule) error {
 
 	if a == nil {
-		if fi.BoolValue(e.In) == true {
+		if fi.BoolValue(e.In) {
 			klog.V(2).Infof("Creating SecurityGroupRule of SecurityGroup:%q", fi.StringValue(e.SecurityGroup.SecurityGroupId))
 
 			authorizeSecurityGroupArgs := &ecs.AuthorizeSecurityGroupArgs{
@@ -176,19 +175,18 @@ func (_ *SecurityGroupRule) RenderALI(t *aliup.ALIAPITarget, a, e, changes *Secu
 				return fmt.Errorf("error creating securityGroupRule: %v", err)
 			}
 		}
-
 	}
 	return nil
 }
 
 type terraformSecurityGroupRole struct {
-	Name            *string            `json:"name,omitempty"`
-	Type            *string            `json:"type,omitempty"`
-	IpProtocol      *string            `json:"ip_protocol,omitempty"`
-	SourceCidrIp    *string            `json:"cidr_ip,omitempty"`
-	SecurityGroupId *terraform.Literal `json:"security_group_id ,omitempty"`
-	SourceGroupId   *terraform.Literal `json:"source_security_group_id  ,omitempty"`
-	PortRange       *string            `json:"port_range,omitempty"`
+	Name            *string            `json:"name,omitempty" cty:"name"`
+	Type            *string            `json:"type,omitempty" cty:"type"`
+	IpProtocol      *string            `json:"ip_protocol,omitempty" cty:"ip_protocol"`
+	SourceCidrIp    *string            `json:"cidr_ip,omitempty" cty:"cidr_ip"`
+	SecurityGroupId *terraform.Literal `json:"security_group_id,omitempty" cty:"security_group_id"`
+	SourceGroupId   *terraform.Literal `json:"source_security_group_id,omitempty" cty:"source_security_group_id"`
+	PortRange       *string            `json:"port_range,omitempty" cty:"port_range"`
 }
 
 func (_ *SecurityGroupRule) RenderTerraform(t *terraform.TerraformTarget, a, e, changes *SecurityGroupRule) error {

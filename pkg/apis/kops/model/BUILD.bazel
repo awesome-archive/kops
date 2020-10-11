@@ -2,7 +2,10 @@ load("@io_bazel_rules_go//go:def.bzl", "go_library", "go_test")
 
 go_library(
     name = "go_default_library",
-    srcs = ["utils.go"],
+    srcs = [
+        "features.go",
+        "utils.go",
+    ],
     importpath = "k8s.io/kops/pkg/apis/kops/model",
     visibility = ["//visibility:public"],
     deps = [
@@ -13,7 +16,10 @@ go_library(
 
 go_test(
     name = "go_default_test",
-    srcs = ["utils_test.go"],
+    srcs = [
+        "features_test.go",
+        "utils_test.go",
+    ],
     embed = [":go_default_library"],
     deps = ["//pkg/apis/kops:go_default_library"],
 )

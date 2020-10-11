@@ -1,5 +1,5 @@
 /*
-Copyright 2018 The Kubernetes Authors.
+Copyright 2019 The Kubernetes Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -27,7 +27,7 @@ import (
 	"k8s.io/kops/upup/pkg/fi"
 	"k8s.io/kops/upup/pkg/fi/nodeup/nodetasks"
 
-	"k8s.io/klog"
+	"k8s.io/klog/v2"
 )
 
 // NodeAuthorizationBuilder is responsible for node authorization
@@ -43,11 +43,11 @@ func (b *NodeAuthorizationBuilder) Build(c *fi.ModelBuilderContext) error {
 	if b.UseBootstrapTokens() && b.IsMaster {
 		name := "node-authorizer"
 		// creates /src/kubernetes/node-authorizer/{tls,tls-key}.pem
-		if err := b.BuildCertificatePairTask(c, name, name, "tls"); err != nil {
+		if err := b.BuildCertificatePairTask(c, name, name, "tls", nil); err != nil {
 			return err
 		}
 		// creates /src/kubernetes/node-authorizer/ca.pem
-		if err := b.BuildCertificateTask(c, fi.CertificateId_CA, filepath.Join(name, "ca.pem")); err != nil {
+		if err := b.BuildCertificateTask(c, fi.CertificateIDCA, filepath.Join(name, "ca.pem"), nil); err != nil {
 			return err
 		}
 	}
@@ -55,10 +55,10 @@ func (b *NodeAuthorizationBuilder) Build(c *fi.ModelBuilderContext) error {
 	authorizerDir := "node-authorizer"
 	// @check if bootstrap tokens are enabled and download client certificates for nodes
 	if b.UseBootstrapTokens() && !b.IsMaster {
-		if err := b.BuildCertificatePairTask(c, "node-authorizer-client", authorizerDir, "tls"); err != nil {
+		if err := b.BuildCertificatePairTask(c, "node-authorizer-client", authorizerDir, "tls", nil); err != nil {
 			return err
 		}
-		if err := b.BuildCertificateTask(c, fi.CertificateId_CA, authorizerDir+"/ca.pem"); err != nil {
+		if err := b.BuildCertificateTask(c, fi.CertificateIDCA, authorizerDir+"/ca.pem", nil); err != nil {
 			return err
 		}
 	}
@@ -77,8 +77,15 @@ func (b *NodeAuthorizationBuilder) Build(c *fi.ModelBuilderContext) error {
 		man := &systemd.Manifest{}
 		man.Set("Unit", "Description", "Node Authorization Client")
 		man.Set("Unit", "Documentation", "https://github.com/kubernetes/kops")
-		man.Set("Unit", "After", "docker.service")
-		man.Set("Unit", "Before", "kubelet.service")
+		man.Set("Unit", "Before", kubeletService)
+		switch b.Cluster.Spec.ContainerRuntime {
+		case "docker":
+			man.Set("Unit", "After", "docker.service")
+		case "containerd":
+			man.Set("Unit", "After", "containerd.service")
+		default:
+			klog.Warningf("unknown container runtime %q", b.Cluster.Spec.ContainerRuntime)
+		}
 
 		clientCert := filepath.Join(b.PathSrvKubernetes(), authorizerDir, "tls.pem")
 		man.Set("Service", "Type", "oneshot")
@@ -89,7 +96,13 @@ func (b *NodeAuthorizationBuilder) Build(c *fi.ModelBuilderContext) error {
 		man.Set("Service", "ExecStartPre", "/bin/bash -c 'while [ ! -f "+clientCert+" ]; do sleep 5; done; sleep 5'")
 
 		interval := 10 * time.Second
+		if na.Interval != nil {
+			interval = na.Interval.Duration
+		}
 		timeout := 5 * time.Minute
+		if na.Timeout != nil {
+			timeout = na.Timeout.Duration
+		}
 
 		// @node: using a string array just to make it easier to read
 		dockerCmd := []string{

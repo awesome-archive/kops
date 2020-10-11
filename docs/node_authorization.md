@@ -1,5 +1,9 @@
 ### **Node Authorization Service**
 
+:warning: The node authorization service is deprecated.
+As of Kubernetes 1.19 kops will, on AWS, ignore the `nodeAuthorization` field of the cluster spec and
+worker nodes will obtain client certificates for kubelet and other purposes through kops-controller.
+
 The [node authorization service] is an experimental service which in the absence of a kops-apiserver provides the distribution of tokens to the worker nodes. Bootstrap tokens provide worker nodes a short-time credential to request access kubeconfig certificate. A gist of the flow is;
 
 - a secret of type `bootstrap.kubernetes.io/token` is created on behalf of a node in the kube-system namespace.
@@ -9,7 +13,7 @@ The [node authorization service] is an experimental service which in the absence
 - the client certificate by default is added into the system:nodes rbac group _(note, if you are using PSP this is automatically bound by kops on your behalf)_.
 - the kubelet at this point has a server certificate and the client api certificate and good to go.
 
-#### **Integretion with Kops**
+#### **Integration with Kops**
 
 The node authorization service is run on the master as a daemonset, by default dns is _node-authorizer-internal.dns_zone_:10443 and added via same mechanism at the internal kube-apiserver i.e. annotations on the kube-apiserver pods which is picked up the dns-controller and added to the dns zone.
 
@@ -35,7 +39,7 @@ Assuming all the conditions are met a secret token is generated and returned to 
 
 Enabling the node authorization service is as follows; firstly you must enable the feature flag as node authorization is still experimental; export KOPS_FEATURE_FLAGS=EnableNodeAuthorization
 
-```
+```yaml
 # in the cluster spec
 nodeAuthorization:
   # enable the service under the node authorization section, please review the settings in the components.go

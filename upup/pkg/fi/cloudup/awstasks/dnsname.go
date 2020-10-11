@@ -1,5 +1,5 @@
 /*
-Copyright 2016 The Kubernetes Authors.
+Copyright 2019 The Kubernetes Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -23,14 +23,14 @@ import (
 
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/route53"
-	"k8s.io/klog"
+	"k8s.io/klog/v2"
 	"k8s.io/kops/upup/pkg/fi"
 	"k8s.io/kops/upup/pkg/fi/cloudup/awsup"
 	"k8s.io/kops/upup/pkg/fi/cloudup/cloudformation"
 	"k8s.io/kops/upup/pkg/fi/cloudup/terraform"
 )
 
-//go:generate fitask -type=DNSName
+// +kops:fitask
 type DNSName struct {
 	Name      *string
 	Lifecycle *fi.Lifecycle
@@ -188,19 +188,19 @@ func (_ *DNSName) RenderAWS(t *awsup.AWSAPITarget, a, e, changes *DNSName) error
 }
 
 type terraformRoute53Record struct {
-	Name    *string  `json:"name"`
-	Type    *string  `json:"type"`
-	TTL     *string  `json:"ttl,omitempty"`
-	Records []string `json:"records,omitempty"`
+	Name    *string  `json:"name" cty:"name"`
+	Type    *string  `json:"type" cty:"type"`
+	TTL     *string  `json:"ttl,omitempty" cty:"ttl"`
+	Records []string `json:"records,omitempty" cty:"records"`
 
-	Alias  *terraformAlias    `json:"alias,omitempty"`
-	ZoneID *terraform.Literal `json:"zone_id"`
+	Alias  *terraformAlias    `json:"alias,omitempty" cty:"alias"`
+	ZoneID *terraform.Literal `json:"zone_id" cty:"zone_id"`
 }
 
 type terraformAlias struct {
-	Name                 *terraform.Literal `json:"name"`
-	ZoneID               *terraform.Literal `json:"zone_id"`
-	EvaluateTargetHealth *bool              `json:"evaluate_target_health"`
+	Name                 *terraform.Literal `json:"name" cty:"name"`
+	ZoneID               *terraform.Literal `json:"zone_id" cty:"zone_id"`
+	EvaluateTargetHealth *bool              `json:"evaluate_target_health" cty:"evaluate_target_health"`
 }
 
 func (_ *DNSName) RenderTerraform(t *terraform.TerraformTarget, a, e, changes *DNSName) error {

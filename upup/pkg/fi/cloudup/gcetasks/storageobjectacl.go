@@ -20,14 +20,14 @@ import (
 	"fmt"
 
 	"google.golang.org/api/storage/v1"
-	"k8s.io/klog"
+	"k8s.io/klog/v2"
 	"k8s.io/kops/upup/pkg/fi"
 	"k8s.io/kops/upup/pkg/fi/cloudup/gce"
 	"k8s.io/kops/upup/pkg/fi/cloudup/terraform"
 )
 
 // StorageObjectAcl represents an ACL rule on a google cloud storage object
-//go:generate fitask -type=StorageObjectAcl
+// +kops:fitask
 type StorageObjectAcl struct {
 	Name      *string
 	Lifecycle *fi.Lifecycle
@@ -124,9 +124,9 @@ func (_ *StorageObjectAcl) RenderGCE(t *gce.GCEAPITarget, a, e, changes *Storage
 
 // terraformStorageObjectAcl is the model for a terraform google_storage_object_acl rule
 type terraformStorageObjectAcl struct {
-	Bucket     string   `json:"bucket,omitempty"`
-	Object     string   `json:"object,omitempty"`
-	RoleEntity []string `json:"role_entity,omitempty"`
+	Bucket     string   `json:"bucket,omitempty" cty:"bucket"`
+	Object     string   `json:"object,omitempty" cty:"object"`
+	RoleEntity []string `json:"role_entity,omitempty" cty:"role_entity"`
 }
 
 func (_ *StorageObjectAcl) RenderTerraform(t *terraform.TerraformTarget, a, e, changes *StorageObjectAcl) error {

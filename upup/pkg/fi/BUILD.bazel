@@ -4,6 +4,7 @@ go_library(
     name = "go_default_library",
     srcs = [
         "assetstore.go",
+        "authenticate.go",
         "ca.go",
         "changes.go",
         "clientset_castore.go",
@@ -59,7 +60,7 @@ go_library(
         "//vendor/k8s.io/apimachinery/pkg/runtime:go_default_library",
         "//vendor/k8s.io/apimachinery/pkg/util/sets:go_default_library",
         "//vendor/k8s.io/apimachinery/pkg/util/validation/field:go_default_library",
-        "//vendor/k8s.io/klog:go_default_library",
+        "//vendor/k8s.io/klog/v2:go_default_library",
     ],
 )
 
@@ -68,10 +69,12 @@ go_test(
     size = "small",
     srcs = [
         "dryruntarget_test.go",
+        "files_test.go",
         "vfs_castore_test.go",
     ],
     embed = [":go_default_library"],
     deps = [
+        "//pkg/apis/kops:go_default_library",
         "//pkg/pki:go_default_library",
         "//util/pkg/vfs:go_default_library",
     ],

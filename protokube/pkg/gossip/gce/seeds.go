@@ -20,8 +20,8 @@ import (
 	"fmt"
 	"strings"
 
-	compute "google.golang.org/api/compute/v0.beta"
-	"k8s.io/klog"
+	compute "google.golang.org/api/compute/v1"
+	"k8s.io/klog/v2"
 	"k8s.io/kops/protokube/pkg/gossip"
 )
 

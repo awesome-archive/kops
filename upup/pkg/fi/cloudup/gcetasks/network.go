@@ -1,5 +1,5 @@
 /*
-Copyright 2016 The Kubernetes Authors.
+Copyright 2019 The Kubernetes Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -20,14 +20,14 @@ import (
 	"fmt"
 	"reflect"
 
-	compute "google.golang.org/api/compute/v0.beta"
-	"k8s.io/klog"
+	compute "google.golang.org/api/compute/v1"
+	"k8s.io/klog/v2"
 	"k8s.io/kops/upup/pkg/fi"
 	"k8s.io/kops/upup/pkg/fi/cloudup/gce"
 	"k8s.io/kops/upup/pkg/fi/cloudup/terraform"
 )
 
-//go:generate fitask -type=Network
+// +kops:fitask
 type Network struct {
 	Name      *string
 	Lifecycle *fi.Lifecycle
@@ -76,7 +76,7 @@ func (e *Network) Find(c *fi.Context) (*Network, error) {
 
 func (e *Network) URL(project string) string {
 	u := gce.GoogleCloudURL{
-		Version: "beta",
+		Version: "v1",
 		Project: project,
 		Name:    *e.Name,
 		Type:    "networks",
@@ -151,9 +151,9 @@ func (_ *Network) RenderGCE(t *gce.GCEAPITarget, a, e, changes *Network) error {
 }
 
 type terraformNetwork struct {
-	Name                  *string `json:"name"`
-	IPv4Range             *string `json:"ipv4_range,omitempty"`
-	AutoCreateSubnetworks *bool   `json:"auto_create_subnetworks,omitempty"`
+	Name                  *string `json:"name" cty:"name"`
+	IPv4Range             *string `json:"ipv4_range,omitempty" cty:"ipv4_range"`
+	AutoCreateSubnetworks *bool   `json:"auto_create_subnetworks,omitempty" cty:"auto_create_subnetworks"`
 }
 
 func (_ *Network) RenderTerraform(t *terraform.TerraformTarget, a, e, changes *Network) error {

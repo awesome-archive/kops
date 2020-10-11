@@ -1,48 +1,44 @@
 Lifecycle: null
 Name: etcd-clients-ca
 Signer: null
-alternateNameTasks: null
 alternateNames: null
-format: v1alpha2
+oldFormat: false
 subject: cn=etcd-clients-ca
 type: ca
 ---
 Lifecycle: null
 Name: etcd-manager-ca-events
 Signer: null
-alternateNameTasks: null
 alternateNames: null
-format: v1alpha2
+oldFormat: false
 subject: cn=etcd-manager-ca-events
 type: ca
 ---
 Lifecycle: null
 Name: etcd-manager-ca-main
 Signer: null
-alternateNameTasks: null
 alternateNames: null
-format: v1alpha2
+oldFormat: false
 subject: cn=etcd-manager-ca-main
 type: ca
 ---
 Lifecycle: null
 Name: etcd-peers-ca-events
 Signer: null
-alternateNameTasks: null
 alternateNames: null
-format: v1alpha2
+oldFormat: false
 subject: cn=etcd-peers-ca-events
 type: ca
 ---
 Lifecycle: null
 Name: etcd-peers-ca-main
 Signer: null
-alternateNameTasks: null
 alternateNames: null
-format: v1alpha2
+oldFormat: false
 subject: cn=etcd-peers-ca-main
 type: ca
 ---
+Base: memfs://clusters.example.com/minimal.example.com/backups/etcd-events
 Contents:
   Name: ""
   Resource: |-
@@ -50,9 +46,10 @@ Contents:
       "memberCount": 1
     }
 Lifecycle: null
-Location: backups/etcd/events/control/etcd-cluster-spec
+Location: /control/etcd-cluster-spec
 Name: etcd-cluster-spec-events
 ---
+Base: memfs://clusters.example.com/minimal.example.com/backups/etcd-main
 Contents:
   Name: ""
   Resource: |-
@@ -60,9 +57,10 @@ Contents:
       "memberCount": 1
     }
 Lifecycle: null
-Location: backups/etcd/main/control/etcd-cluster-spec
+Location: /control/etcd-cluster-spec
 Name: etcd-cluster-spec-main
 ---
+Base: null
 Contents:
   Name: ""
   Resource: |
@@ -81,15 +79,8 @@ Contents:
       - command:
         - /bin/sh
         - -c
-        - mkfifo /tmp/pipe; (tee -a /var/log/etcd.log < /tmp/pipe & ) ; exec /etcd-manager
-          --backup-store=memfs://clusters.example.com/minimal.example.com/backups/etcd-events
-          --client-urls=https://__name__:4002 --cluster-name=etcd-events --containerized=true
-          --dns-suffix=.internal.minimal.example.com --etcd-insecure=true --grpc-port=3997
-          --insecure=false --peer-urls=https://__name__:2381 --quarantine-client-urls=https://__name__:3995
-          --v=6 --volume-name-tag=k8s.io/etcd/events --volume-provider=aws --volume-tag=k8s.io/etcd/events
-          --volume-tag=k8s.io/role/master=1 --volume-tag=kubernetes.io/cluster/minimal.example.com=owned
-          > /tmp/pipe 2>&1
-        image: kopeio/etcd-manager:3.0.20190516
+        - mkfifo /tmp/pipe; (tee -a /var/log/etcd.log < /tmp/pipe & ) ; exec /etcd-manager --backup-store=memfs://clusters.example.com/minimal.example.com/backups/etcd-events --client-urls=https://__name__:4002 --cluster-name=etcd-events --containerized=true --dns-suffix=.internal.minimal.example.com --etcd-insecure=true --grpc-port=3997 --insecure=false --peer-urls=https://__name__:2381 --quarantine-client-urls=https://__name__:3995 --v=6 --volume-name-tag=k8s.io/etcd/events --volume-provider=aws --volume-tag=k8s.io/etcd/events --volume-tag=k8s.io/role/master=1 --volume-tag=kubernetes.io/cluster/minimal.example.com=owned > /tmp/pipe 2>&1
+        image: kopeio/etcd-manager:3.0.20200531
         name: etcd-manager
         resources:
           requests:
@@ -100,14 +91,13 @@ Contents:
         volumeMounts:
         - mountPath: /rootfs
           name: rootfs
-        - mountPath: /etc/hosts
-          name: hosts
         - mountPath: /etc/kubernetes/pki/etcd-manager
           name: pki
         - mountPath: /var/log/etcd.log
           name: varlogetcd
       hostNetwork: true
       hostPID: true
+      priorityClassName: system-cluster-critical
       tolerations:
       - key: CriticalAddonsOnly
         operator: Exists
@@ -116,10 +106,6 @@ Contents:
           path: /
           type: Directory
         name: rootfs
-      - hostPath:
-          path: /etc/hosts
-          type: File
-        name: hosts
       - hostPath:
           path: /etc/kubernetes/pki/etcd-manager-events
           type: DirectoryOrCreate
@@ -133,6 +119,7 @@ Lifecycle: null
 Location: manifests/etcd/events.yaml
 Name: manifests-etcdmanager-events
 ---
+Base: null
 Contents:
   Name: ""
   Resource: |
@@ -151,15 +138,8 @@ Contents:
       - command:
         - /bin/sh
         - -c
-        - mkfifo /tmp/pipe; (tee -a /var/log/etcd.log < /tmp/pipe & ) ; exec /etcd-manager
-          --backup-store=memfs://clusters.example.com/minimal.example.com/backups/etcd-main
-          --client-urls=https://__name__:4001 --cluster-name=etcd --containerized=true
-          --dns-suffix=.internal.minimal.example.com --etcd-insecure=true --grpc-port=3996
-          --insecure=false --peer-urls=https://__name__:2380 --quarantine-client-urls=https://__name__:3994
-          --v=6 --volume-name-tag=k8s.io/etcd/main --volume-provider=aws --volume-tag=k8s.io/etcd/main
-          --volume-tag=k8s.io/role/master=1 --volume-tag=kubernetes.io/cluster/minimal.example.com=owned
-          > /tmp/pipe 2>&1
-        image: kopeio/etcd-manager:3.0.20190516
+        - mkfifo /tmp/pipe; (tee -a /var/log/etcd.log < /tmp/pipe & ) ; exec /etcd-manager --backup-store=memfs://clusters.example.com/minimal.example.com/backups/etcd-main --client-urls=https://__name__:4001 --cluster-name=etcd --containerized=true --dns-suffix=.internal.minimal.example.com --etcd-insecure=true --grpc-port=3996 --insecure=false --peer-urls=https://__name__:2380 --quarantine-client-urls=https://__name__:3994 --v=6 --volume-name-tag=k8s.io/etcd/main --volume-provider=aws --volume-tag=k8s.io/etcd/main --volume-tag=k8s.io/role/master=1 --volume-tag=kubernetes.io/cluster/minimal.example.com=owned > /tmp/pipe 2>&1
+        image: kopeio/etcd-manager:3.0.20200531
         name: etcd-manager
         resources:
           requests:
@@ -170,14 +150,13 @@ Contents:
         volumeMounts:
         - mountPath: /rootfs
           name: rootfs
-        - mountPath: /etc/hosts
-          name: hosts
         - mountPath: /etc/kubernetes/pki/etcd-manager
           name: pki
         - mountPath: /var/log/etcd.log
           name: varlogetcd
       hostNetwork: true
       hostPID: true
+      priorityClassName: system-cluster-critical
       tolerations:
       - key: CriticalAddonsOnly
         operator: Exists
@@ -186,10 +165,6 @@ Contents:
           path: /
           type: Directory
         name: rootfs
-      - hostPath:
-          path: /etc/hosts
-          type: File
-        name: hosts
       - hostPath:
           path: /etc/kubernetes/pki/etcd-manager-main
           type: DirectoryOrCreate

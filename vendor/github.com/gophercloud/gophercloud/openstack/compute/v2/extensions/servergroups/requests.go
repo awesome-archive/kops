@@ -21,11 +21,19 @@ type CreateOptsBuilder interface {
 
 // CreateOpts specifies Server Group creation parameters.
 type CreateOpts struct {
-	// Name is the name of the server group
+	// Name is the name of the server group.
 	Name string `json:"name" required:"true"`
 
-	// Policies are the server group policies
-	Policies []string `json:"policies" required:"true"`
+	// Policies are the server group policies.
+	Policies []string `json:"policies,omitempty"`
+
+	// Policy specifies the name of a policy.
+	// Requires microversion 2.64 or later.
+	Policy string `json:"policy,omitempty"`
+
+	// Rules specifies the set of rules.
+	// Requires microversion 2.64 or later.
+	Rules *Rules `json:"rules,omitempty"`
 }
 
 // ToServerGroupCreateMap constructs a request body from CreateOpts.
@@ -40,20 +48,23 @@ func Create(client *gophercloud.ServiceClient, opts CreateOptsBuilder) (r Create
 		r.Err = err
 		return
 	}
-	_, r.Err = client.Post(createURL(client), b, &r.Body, &gophercloud.RequestOpts{
+	resp, err := client.Post(createURL(client), b, &r.Body, &gophercloud.RequestOpts{
 		OkCodes: []int{200},
 	})
+	_, r.Header, r.Err = gophercloud.ParseResponse(resp, err)
 	return
 }
 
 // Get returns data about a previously created ServerGroup.
 func Get(client *gophercloud.ServiceClient, id string) (r GetResult) {
-	_, r.Err = client.Get(getURL(client, id), &r.Body, nil)
+	resp, err := client.Get(getURL(client, id), &r.Body, nil)
+	_, r.Header, r.Err = gophercloud.ParseResponse(resp, err)
 	return
 }
 
 // Delete requests the deletion of a previously allocated ServerGroup.
 func Delete(client *gophercloud.ServiceClient, id string) (r DeleteResult) {
-	_, r.Err = client.Delete(deleteURL(client, id), nil)
+	resp, err := client.Delete(deleteURL(client, id), nil)
+	_, r.Header, r.Err = gophercloud.ParseResponse(resp, err)
 	return
 }

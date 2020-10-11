@@ -1,5 +1,5 @@
 /*
-Copyright 2016 The Kubernetes Authors.
+Copyright 2019 The Kubernetes Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -22,7 +22,7 @@ import (
 	"sync"
 	"time"
 
-	"k8s.io/klog"
+	"k8s.io/klog/v2"
 )
 
 type executor struct {
@@ -108,9 +108,7 @@ func (e *executor) RunTasks(taskMap map[string]Task) error {
 		progress := false
 
 		var tasks []*taskState
-		for _, ts := range canRun {
-			tasks = append(tasks, ts)
-		}
+		tasks = append(tasks, canRun...)
 
 		taskErrors := e.forkJoin(tasks)
 		var errors []error
@@ -126,8 +124,12 @@ func (e *executor) RunTasks(taskMap map[string]Task) error {
 					continue
 				}
 
-				remaining := time.Second * time.Duration(int(ts.deadline.Sub(time.Now()).Seconds()))
-				klog.Warningf("error running task %q (%v remaining to succeed): %v", ts.key, remaining, err)
+				remaining := time.Second * time.Duration(int(time.Until(ts.deadline).Seconds()))
+				if _, ok := err.(*TryAgainLaterError); ok {
+					klog.Infof("Task %q not ready: %v", ts.key, err)
+				} else {
+					klog.Warningf("error running task %q (%v remaining to succeed): %v", ts.key, remaining, err)
+				}
 				errors = append(errors, err)
 				ts.lastError = err
 			} else {
@@ -142,7 +144,7 @@ func (e *executor) RunTasks(taskMap map[string]Task) error {
 				// Logic error!
 				panic("did not make progress executing tasks; but no errors reported")
 			}
-			klog.Infof("No progress made, sleeping before retrying %d failed task(s)", len(errors))
+			klog.Infof("No progress made, sleeping before retrying %d task(s)", len(errors))
 			time.Sleep(e.options.WaitAfterAllTasksFailed)
 		}
 	}
@@ -160,8 +162,6 @@ func (e *executor) RunTasks(taskMap map[string]Task) error {
 
 	return nil
 }
-
-type runnable func() error
 
 func (e *executor) forkJoin(tasks []*taskState) []error {
 	if len(tasks) == 0 {

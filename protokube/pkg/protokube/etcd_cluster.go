@@ -1,5 +1,5 @@
 /*
-Copyright 2016 The Kubernetes Authors.
+Copyright 2019 The Kubernetes Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -26,7 +26,7 @@ import (
 	"time"
 
 	"k8s.io/apimachinery/pkg/api/resource"
-	"k8s.io/klog"
+	"k8s.io/klog/v2"
 	"k8s.io/kops/pkg/k8scodecs"
 	"k8s.io/kops/protokube/pkg/etcd"
 )
@@ -95,10 +95,10 @@ type EtcdNode struct {
 
 // EtcdController defines the etcd controller
 type EtcdController struct {
-	kubeBoot   *KubeBoot
-	volume     *Volume
-	volumeSpec *etcd.EtcdClusterSpec
-	cluster    *EtcdCluster
+	kubeBoot *KubeBoot
+	//volume     *Volume
+	//volumeSpec *etcd.EtcdClusterSpec
+	cluster *EtcdCluster
 }
 
 // newEtcdController creates and returns a new etcd controller

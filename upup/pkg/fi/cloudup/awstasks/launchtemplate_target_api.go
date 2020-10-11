@@ -1,5 +1,5 @@
 /*
-Copyright 2018 The Kubernetes Authors.
+Copyright 2019 The Kubernetes Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -21,14 +21,13 @@ import (
 	"fmt"
 	"sort"
 	"strings"
-	"time"
 
 	"k8s.io/kops/upup/pkg/fi"
 	"k8s.io/kops/upup/pkg/fi/cloudup/awsup"
 
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/ec2"
-	"k8s.io/klog"
+	"k8s.io/klog/v2"
 )
 
 // RenderAWS is responsible for performing creating / updating the launch template
@@ -48,12 +47,19 @@ func (t *LaunchTemplate) RenderAWS(c *awsup.AWSAPITarget, a, ep, changes *Launch
 			EbsOptimized:          t.RootVolumeOptimization,
 			ImageId:               image.ImageId,
 			InstanceType:          t.InstanceType,
+			NetworkInterfaces: []*ec2.LaunchTemplateInstanceNetworkInterfaceSpecificationRequest{
+				{
+					AssociatePublicIpAddress: t.AssociatePublicIP,
+					DeleteOnTermination:      aws.Bool(true),
+					DeviceIndex:              fi.Int64(0),
+				},
+			},
 		},
 		LaunchTemplateName: aws.String(name),
 	}
 	lc := input.LaunchTemplateData
 
-	// @step: add the the actual block device mappings
+	// @step: add the actual block device mappings
 	rootDevices, err := t.buildRootDevice(c.Cloud)
 	if err != nil {
 		return err
@@ -76,12 +82,11 @@ func (t *LaunchTemplate) RenderAWS(c *awsup.AWSAPITarget, a, ep, changes *Launch
 	if t.SSHKey != nil {
 		lc.KeyName = t.SSHKey.Name
 	}
-	var securityGroups []*string
 	// @step: add the security groups
 	for _, sg := range t.SecurityGroups {
-		securityGroups = append(securityGroups, sg.ID)
+		lc.NetworkInterfaces[0].Groups = append(lc.NetworkInterfaces[0].Groups, sg.ID)
 	}
-	// @step: add any tenacy details
+	// @step: add any tenancy details
 	if t.Tenancy != nil {
 		lc.Placement = &ec2.LaunchTemplatePlacementRequest{Tenancy: t.Tenancy}
 	}
@@ -96,17 +101,27 @@ func (t *LaunchTemplate) RenderAWS(c *awsup.AWSAPITarget, a, ep, changes *Launch
 			Name: t.IAMInstanceProfile.Name,
 		}
 	}
-	// @step: are the node publically facing
-	if fi.BoolValue(t.AssociatePublicIP) {
-		lc.NetworkInterfaces = append(lc.NetworkInterfaces,
-			&ec2.LaunchTemplateInstanceNetworkInterfaceSpecificationRequest{
-				AssociatePublicIpAddress: t.AssociatePublicIP,
-				DeleteOnTermination:      aws.Bool(true),
-				DeviceIndex:              fi.Int64(0),
-				Groups:                   securityGroups,
+	// @step: add the tags
+	if len(t.Tags) > 0 {
+		var tags []*ec2.Tag
+		for k, v := range t.Tags {
+			tags = append(tags, &ec2.Tag{
+				Key:   aws.String(k),
+				Value: aws.String(v),
 			})
-	} else {
-		lc.SecurityGroupIds = securityGroups
+		}
+		lc.TagSpecifications = append(lc.TagSpecifications, &ec2.LaunchTemplateTagSpecificationRequest{
+			ResourceType: aws.String(ec2.ResourceTypeInstance),
+			Tags:         tags,
+		})
+		lc.TagSpecifications = append(lc.TagSpecifications, &ec2.LaunchTemplateTagSpecificationRequest{
+			ResourceType: aws.String(ec2.ResourceTypeVolume),
+			Tags:         tags,
+		})
+		input.TagSpecifications = append(input.TagSpecifications, &ec2.TagSpecification{
+			ResourceType: aws.String(ec2.ResourceTypeLaunchTemplate),
+			Tags:         tags,
+		})
 	}
 	// @step: add the userdata
 	if t.UserData != nil {
@@ -116,33 +131,21 @@ func (t *LaunchTemplate) RenderAWS(c *awsup.AWSAPITarget, a, ep, changes *Launch
 		}
 		lc.UserData = aws.String(base64.StdEncoding.EncodeToString(d))
 	}
-
-	// @step: attempt to create the launch template
-	err = func() error {
-		for attempt := 0; attempt < 10; attempt++ {
-			if _, err = c.Cloud.EC2().CreateLaunchTemplate(input); err == nil {
-				return nil
-			}
-
-			if awsup.AWSErrorCode(err) == "ValidationError" {
-				message := awsup.AWSErrorMessage(err)
-				if strings.Contains(message, "not authorized") || strings.Contains(message, "Invalid IamInstance") {
-					if attempt > 10 {
-						return fmt.Errorf("IAM instance profile not yet created/propagated (original error: %v)", message)
-					}
-					klog.V(4).Infof("got an error indicating that the IAM instance profile %q is not ready: %q", fi.StringValue(ep.IAMInstanceProfile.Name), message)
-
-					time.Sleep(5 * time.Second)
-					continue
-				}
-				klog.V(4).Infof("ErrorCode=%q, Message=%q", awsup.AWSErrorCode(err), awsup.AWSErrorMessage(err))
-			}
+	// @step: add market options
+	if t.SpotPrice != "" {
+		s := &ec2.LaunchTemplateSpotMarketOptionsRequest{
+			BlockDurationMinutes:         t.SpotDurationInMinutes,
+			InstanceInterruptionBehavior: t.InstanceInterruptionBehavior,
+			MaxPrice:                     fi.String(t.SpotPrice),
 		}
-
-		return err
-	}()
-	if err != nil {
-		return fmt.Errorf("failed to create aws launch template: %s", err)
+		lc.InstanceMarketOptions = &ec2.LaunchTemplateInstanceMarketOptionsRequest{
+			MarketType:  fi.String("spot"),
+			SpotOptions: s,
+		}
+	}
+	// @step: attempt to create the launch template
+	if _, err = c.Cloud.EC2().CreateLaunchTemplate(input); err != nil {
+		return fmt.Errorf("error creating LaunchTemplate: %v", err)
 	}
 
 	ep.ID = fi.String(name)
@@ -183,15 +186,14 @@ func (t *LaunchTemplate) Find(c *fi.Context) (*LaunchTemplate, error) {
 	for _, x := range lt.LaunchTemplateData.NetworkInterfaces {
 		if aws.BoolValue(x.AssociatePublicIpAddress) {
 			actual.AssociatePublicIP = fi.Bool(true)
-			// @note: not sure i like this https://github.com/hashicorp/terraform/issues/2998
-			for _, id := range x.Groups {
-				actual.SecurityGroups = append(actual.SecurityGroups, &SecurityGroup{ID: id})
-			}
+		}
+		for _, id := range x.Groups {
+			actual.SecurityGroups = append(actual.SecurityGroups, &SecurityGroup{ID: id})
 		}
 	}
-	// @step: add at the security groups
+	// In older Kops versions, security groups were added to LaunchTemplateData.SecurityGroupIds
 	for _, id := range lt.LaunchTemplateData.SecurityGroupIds {
-		actual.SecurityGroups = append(actual.SecurityGroups, &SecurityGroup{ID: id})
+		actual.SecurityGroups = append(actual.SecurityGroups, &SecurityGroup{ID: fi.String("legacy-" + *id)})
 	}
 	sort.Sort(OrderSecurityGroupsById(actual.SecurityGroups))
 
@@ -211,9 +213,13 @@ func (t *LaunchTemplate) Find(c *fi.Context) (*LaunchTemplate, error) {
 	if lt.LaunchTemplateData.IamInstanceProfile != nil {
 		actual.IAMInstanceProfile = &IAMInstanceProfile{Name: lt.LaunchTemplateData.IamInstanceProfile.Name}
 	}
+	// @step: add instanceInterruptionBehavior if there is one
+	if lt.LaunchTemplateData.InstanceMarketOptions != nil && lt.LaunchTemplateData.InstanceMarketOptions.SpotOptions != nil {
+		actual.InstanceInterruptionBehavior = lt.LaunchTemplateData.InstanceMarketOptions.SpotOptions.InstanceInterruptionBehavior
+	}
 
 	// @step: get the image is order to find out the root device name as using the index
-	// is not vaiable, under conditions they move
+	// is not variable, under conditions they move
 	image, err := cloud.ResolveImage(fi.StringValue(t.ImageID))
 	if err != nil {
 		return nil, err
@@ -228,6 +234,7 @@ func (t *LaunchTemplate) Find(c *fi.Context) (*LaunchTemplate, error) {
 			actual.RootVolumeSize = b.Ebs.VolumeSize
 			actual.RootVolumeType = b.Ebs.VolumeType
 			actual.RootVolumeIops = b.Ebs.Iops
+			actual.RootVolumeEncryption = b.Ebs.Encrypted
 		} else {
 			_, d := BlockDeviceMappingFromLaunchTemplateBootDeviceRequest(b)
 			actual.BlockDeviceMappings = append(actual.BlockDeviceMappings, d)
@@ -240,6 +247,15 @@ func (t *LaunchTemplate) Find(c *fi.Context) (*LaunchTemplate, error) {
 			return nil, fmt.Errorf("error decoding userdata: %s", err)
 		}
 		actual.UserData = fi.WrapResource(fi.NewStringResource(string(ud)))
+	}
+
+	// @step: add tags
+	if len(lt.LaunchTemplateData.TagSpecifications) > 0 {
+		ts := lt.LaunchTemplateData.TagSpecifications[0]
+		if ts.Tags != nil {
+			tags := mapEC2TagsToMap(ts.Tags)
+			actual.Tags = tags
+		}
 	}
 
 	// @step: to avoid spurious changes on ImageId
@@ -276,9 +292,7 @@ func (t *LaunchTemplate) findAllLaunchTemplates(c *fi.Context) ([]*ec2.LaunchTem
 		if err != nil {
 			return nil, err
 		}
-		for _, x := range resp.LaunchTemplates {
-			list = append(list, x)
-		}
+		list = append(list, resp.LaunchTemplates...)
 
 		if resp.NextToken == nil {
 			return list, nil
@@ -287,70 +301,53 @@ func (t *LaunchTemplate) findAllLaunchTemplates(c *fi.Context) ([]*ec2.LaunchTem
 	}
 }
 
-// findAllLaunchTemplateVersions returns all the launch templates versions for us
-func (t *LaunchTemplate) findAllLaunchTemplatesVersions(c *fi.Context) ([]*ec2.LaunchTemplateVersion, error) {
-	var list []*ec2.LaunchTemplateVersion
-
+// findLaunchTemplates returns a list of launch templates
+func (t *LaunchTemplate) findLaunchTemplates(c *fi.Context) ([]*ec2.LaunchTemplateVersion, error) {
 	cloud, ok := c.Cloud.(awsup.AWSCloud)
 	if !ok {
 		return []*ec2.LaunchTemplateVersion{}, fmt.Errorf("invalid cloud provider: %v, expected: awsup.AWSCloud", c.Cloud)
 	}
 
+	// @step: get a list of the launch templates
 	templates, err := t.findAllLaunchTemplates(c)
 	if err != nil {
 		return nil, err
 	}
 
-	var next *string
-	for _, x := range templates {
-		err := func() error {
-			for {
-				resp, err := cloud.EC2().DescribeLaunchTemplateVersions(&ec2.DescribeLaunchTemplateVersionsInput{
-					LaunchTemplateName: x.LaunchTemplateName,
-					NextToken:          next,
-				})
-				if err != nil {
-					return err
-				}
-				for _, x := range resp.LaunchTemplateVersions {
-					list = append(list, x)
-				}
-				if resp.NextToken == nil {
-					return nil
-				}
-
-				next = resp.NextToken
-			}
-		}()
-		if err != nil {
-			return nil, err
-		}
-	}
-
-	return list, nil
-}
-
-// findLaunchTemplates returns a list of launch templates
-func (t *LaunchTemplate) findLaunchTemplates(c *fi.Context) ([]*ec2.LaunchTemplateVersion, error) {
-	// @step: get a list of the launch templates
-	list, err := t.findAllLaunchTemplatesVersions(c)
-	if err != nil {
-		return nil, err
-	}
 	prefix := fmt.Sprintf("%s-", fi.StringValue(t.Name))
 
-	// @step: filter out the templates we are interested in
-	var filtered []*ec2.LaunchTemplateVersion
-	for _, x := range list {
+	// @step: get the launch template versions for the templates we are interested in
+	var list []*ec2.LaunchTemplateVersion
+	var next *string
+	for _, x := range templates {
 		if strings.HasPrefix(aws.StringValue(x.LaunchTemplateName), prefix) {
-			filtered = append(filtered, x)
+			err := func() error {
+				for {
+					resp, err := cloud.EC2().DescribeLaunchTemplateVersions(&ec2.DescribeLaunchTemplateVersionsInput{
+						LaunchTemplateName: x.LaunchTemplateName,
+						NextToken:          next,
+					})
+					if err != nil {
+						return err
+					}
+					list = append(list, resp.LaunchTemplateVersions...)
+					if resp.NextToken == nil {
+						return nil
+					}
+
+					next = resp.NextToken
+				}
+			}()
+			if err != nil {
+				return nil, err
+			}
 		}
 	}
 
-	// @step: we can sort the configurations in chronological order
-	sort.Slice(filtered, func(i, j int) bool {
-		ti := filtered[i].CreateTime
-		tj := filtered[j].CreateTime
+	// @step: sort the configurations in chronological order
+	sort.Slice(list, func(i, j int) bool {
+		ti := list[i].CreateTime
+		tj := list[j].CreateTime
 		if tj == nil {
 			return true
 		}
@@ -360,7 +357,7 @@ func (t *LaunchTemplate) findLaunchTemplates(c *fi.Context) ([]*ec2.LaunchTempla
 		return ti.UnixNano() < tj.UnixNano()
 	})
 
-	return filtered, nil
+	return list, nil
 }
 
 // findLatestLaunchTemplate returns the latest template

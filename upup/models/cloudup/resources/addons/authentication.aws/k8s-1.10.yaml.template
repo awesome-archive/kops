@@ -34,7 +34,7 @@ spec:
       # - output (output kubeconfig to plug into your apiserver configuration, mounted from the host)
       containers:
       - name: aws-iam-authenticator
-        image: {{ or .Authentication.Aws.Image "gcr.io/heptio-images/authenticator:v0.3.0" }}
+        image: {{ or .Authentication.Aws.Image "602401143452.dkr.ecr.us-west-2.amazonaws.com/amazon/aws-iam-authenticator:v0.4.0" }}
         args:
         - server
         - --config=/etc/aws-iam-authenticator/config.yaml
@@ -43,11 +43,11 @@ spec:
 
         resources:
           requests:
-            memory: 20Mi
-            cpu: 10m
+            memory: {{ or .Authentication.Aws.MemoryRequest "20Mi" }}
+            cpu: {{ or .Authentication.Aws.CPURequest "10m" }}
           limits:
-            memory: 20Mi
-            cpu: 100m
+            memory: {{ or .Authentication.Aws.MemoryLimit "20Mi" }}
+            cpu: {{ or .Authentication.Aws.CPULimit "100m" }}
 
         volumeMounts:
         - name: config

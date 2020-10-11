@@ -1,5 +1,5 @@
 /*
-Copyright 2016 The Kubernetes Authors.
+Copyright 2019 The Kubernetes Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -17,9 +17,11 @@ limitations under the License.
 package main
 
 import (
+	"context"
 	"fmt"
 	"io/ioutil"
 
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	api "k8s.io/kops/pkg/apis/kops"
 	"k8s.io/kops/pkg/client/simple/vfsclientset"
 	"k8s.io/kops/upup/pkg/fi"
@@ -27,9 +29,8 @@ import (
 	"k8s.io/kops/upup/pkg/fi/utils"
 )
 
-func up() error {
-	allowList := true
-	clientset := vfsclientset.NewVFSClientset(registryBase, allowList)
+func up(ctx context.Context) error {
+	clientset := vfsclientset.NewVFSClientset(registryBase)
 
 	cluster := &api.Cluster{}
 	cluster.ObjectMeta.Name = clusterName
@@ -51,11 +52,11 @@ func up() error {
 	}
 
 	for _, etcdClusterName := range cloudup.EtcdClusters {
-		etcdCluster := &api.EtcdClusterSpec{
+		etcdCluster := api.EtcdClusterSpec{
 			Name: etcdClusterName,
 		}
 		for _, masterZone := range masterZones {
-			etcdMember := &api.EtcdMemberSpec{
+			etcdMember := api.EtcdMemberSpec{
 				Name:          masterZone,
 				InstanceGroup: fi.String(masterZone),
 			}
@@ -64,11 +65,16 @@ func up() error {
 		cluster.Spec.EtcdClusters = append(cluster.Spec.EtcdClusters, etcdCluster)
 	}
 
-	if err := cloudup.PerformAssignments(cluster); err != nil {
+	cloud, err := cloudup.BuildCloud(cluster)
+	if err != nil {
 		return err
 	}
 
-	_, err := clientset.CreateCluster(cluster)
+	if err := cloudup.PerformAssignments(cluster, cloud); err != nil {
+		return err
+	}
+
+	_, err = clientset.CreateCluster(ctx, cluster)
 	if err != nil {
 		return err
 	}
@@ -81,7 +87,7 @@ func up() error {
 			Role:    api.InstanceGroupRoleMaster,
 			Subnets: masterZones,
 		}
-		_, err := clientset.InstanceGroupsFor(cluster).Create(ig)
+		_, err := clientset.InstanceGroupsFor(cluster).Create(ctx, ig, metav1.CreateOptions{})
 		if err != nil {
 			return err
 		}
@@ -96,7 +102,7 @@ func up() error {
 			Subnets: nodeZones,
 		}
 
-		_, err := clientset.InstanceGroupsFor(cluster).Create(ig)
+		_, err := clientset.InstanceGroupsFor(cluster).Create(ctx, ig, metav1.CreateOptions{})
 		if err != nil {
 			return err
 		}

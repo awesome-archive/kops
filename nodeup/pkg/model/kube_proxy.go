@@ -18,19 +18,22 @@ package model
 
 import (
 	"fmt"
+	"strings"
 
 	"k8s.io/kops/pkg/dns"
 	"k8s.io/kops/pkg/flagbuilder"
 	"k8s.io/kops/pkg/k8scodecs"
 	"k8s.io/kops/pkg/kubemanifest"
+	"k8s.io/kops/pkg/rbac"
 	"k8s.io/kops/upup/pkg/fi"
 	"k8s.io/kops/upup/pkg/fi/nodeup/nodetasks"
+	"k8s.io/kops/util/pkg/architectures"
 	"k8s.io/kops/util/pkg/exec"
 
 	v1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"k8s.io/klog"
+	"k8s.io/klog/v2"
 )
 
 // KubeProxyBuilder installs kube-proxy
@@ -38,13 +41,13 @@ type KubeProxyBuilder struct {
 	*NodeupModelContext
 }
 
-var _ fi.ModelBuilder = &KubeAPIServerBuilder{}
+var _ fi.ModelBuilder = &KubeProxyBuilder{}
 
 // Build is responsible for building the kube-proxy manifest
 // @TODO we should probably change this to a daemonset in the future and follow the kubeadm path
 func (b *KubeProxyBuilder) Build(c *fi.ModelBuilderContext) error {
 
-	if b.Cluster.Spec.KubeProxy.Enabled != nil && *b.Cluster.Spec.KubeProxy.Enabled == false {
+	if b.Cluster.Spec.KubeProxy.Enabled != nil && !*b.Cluster.Spec.KubeProxy.Enabled {
 		klog.V(2).Infof("Kube-proxy is disabled, will not create configuration for it.")
 		return nil
 	}
@@ -77,15 +80,24 @@ func (b *KubeProxyBuilder) Build(c *fi.ModelBuilderContext) error {
 	}
 
 	{
-		kubeconfig, err := b.BuildPKIKubeconfig("kube-proxy")
-		if err != nil {
-			return err
+		var kubeconfig fi.Resource
+		var err error
+
+		if b.IsMaster {
+			kubeconfig = b.BuildIssuedKubeconfig("kube-proxy", nodetasks.PKIXName{CommonName: rbac.KubeProxy}, c)
+		} else {
+			kubeconfig, err = b.BuildBootstrapKubeconfig("kube-proxy", c)
+			if err != nil {
+				return err
+			}
 		}
+
 		c.AddTask(&nodetasks.File{
-			Path:     "/var/lib/kube-proxy/kubeconfig",
-			Contents: fi.NewStringResource(kubeconfig),
-			Type:     nodetasks.FileType_File,
-			Mode:     s("0400"),
+			Path:           "/var/lib/kube-proxy/kubeconfig",
+			Contents:       kubeconfig,
+			Type:           nodetasks.FileType_File,
+			Mode:           s("0400"),
+			BeforeServices: []string{kubeletService},
 		})
 	}
 
@@ -114,11 +126,7 @@ func (b *KubeProxyBuilder) buildPod() (*v1.Pod, error) {
 			// As a special case, if this is the master, we point kube-proxy to the local IP
 			// This prevents a circular dependency where kube-proxy can't come up until DNS comes up,
 			// which would mean that DNS can't rely on API to come up
-			if b.IsKubernetesGTE("1.6") {
-				c.Master = "https://127.0.0.1"
-			} else {
-				c.Master = "http://127.0.0.1:8080"
-			}
+			c.Master = "https://127.0.0.1"
 		} else {
 			c.Master = "https://" + b.Cluster.Spec.MasterInternalName
 		}
@@ -129,7 +137,7 @@ func (b *KubeProxyBuilder) buildPod() (*v1.Pod, error) {
 
 	cpuRequest, err := resource.ParseQuantity(c.CPURequest)
 	if err != nil {
-		return nil, fmt.Errorf("Error parsing CPURequest=%q", c.CPURequest)
+		return nil, fmt.Errorf("error parsing CPURequest=%q", c.CPURequest)
 	}
 
 	resourceRequests["cpu"] = cpuRequest
@@ -137,7 +145,7 @@ func (b *KubeProxyBuilder) buildPod() (*v1.Pod, error) {
 	if c.CPULimit != "" {
 		cpuLimit, err := resource.ParseQuantity(c.CPULimit)
 		if err != nil {
-			return nil, fmt.Errorf("Error parsing CPULimit=%q", c.CPULimit)
+			return nil, fmt.Errorf("error parsing CPULimit=%q", c.CPULimit)
 		}
 		resourceLimits["cpu"] = cpuLimit
 	}
@@ -145,7 +153,7 @@ func (b *KubeProxyBuilder) buildPod() (*v1.Pod, error) {
 	if c.MemoryRequest != "" {
 		memoryRequest, err := resource.ParseQuantity(c.MemoryRequest)
 		if err != nil {
-			return nil, fmt.Errorf("Error parsing MemoryRequest=%q", c.MemoryRequest)
+			return nil, fmt.Errorf("error parsing MemoryRequest=%q", c.MemoryRequest)
 		}
 		resourceRequests["memory"] = memoryRequest
 	}
@@ -153,7 +161,7 @@ func (b *KubeProxyBuilder) buildPod() (*v1.Pod, error) {
 	if c.MemoryLimit != "" {
 		memoryLimit, err := resource.ParseQuantity(c.MemoryLimit)
 		if err != nil {
-			return nil, fmt.Errorf("Error parsing MemoryLimit=%q", c.MemoryLimit)
+			return nil, fmt.Errorf("error parsing MemoryLimit=%q", c.MemoryLimit)
 		}
 		resourceLimits["memory"] = memoryLimit
 	}
@@ -167,12 +175,20 @@ func (b *KubeProxyBuilder) buildPod() (*v1.Pod, error) {
 	if err != nil {
 		return nil, fmt.Errorf("error building kubeproxy flags: %v", err)
 	}
-	image := c.Image
 
 	flags = append(flags, []string{
 		"--kubeconfig=/var/lib/kube-proxy/kubeconfig",
-		"--oom-score-adj=-998",
-		`--resource-container=""`}...)
+		"--oom-score-adj=-998"}...)
+
+	if !b.IsKubernetesGTE("1.16") {
+		// Removed in 1.16: https://github.com/kubernetes/kubernetes/pull/78294
+		flags = append(flags, `--resource-container=""`)
+	}
+
+	image := c.Image
+	if b.Architecture != architectures.ArchitectureAmd64 {
+		image = strings.Replace(image, "-amd64", "-"+string(b.Architecture), 1)
+	}
 
 	container := &v1.Container{
 		Name:  "kube-proxy",
@@ -235,7 +251,7 @@ func (b *KubeProxyBuilder) buildPod() (*v1.Pod, error) {
 	}
 
 	// Mount the iptables lock file
-	if b.IsKubernetesGTE("1.9") {
+	{
 		addHostPathMapping(pod, container, "iptableslock", "/run/xtables.lock").ReadOnly = false
 
 		vol := pod.Spec.Volumes[len(pod.Spec.Volumes)-1]
@@ -276,6 +292,10 @@ func (b *KubeProxyBuilder) buildPod() (*v1.Pod, error) {
 	// any effect on rescheduler (default scheduler and rescheduler are not
 	// involved in scheduling kube-proxy).
 	kubemanifest.MarkPodAsCritical(pod)
+
+	// Also set priority so that kube-proxy does not get evicted in clusters where
+	// PodPriority is enabled.
+	kubemanifest.MarkPodAsNodeCritical(pod)
 
 	return pod, nil
 }

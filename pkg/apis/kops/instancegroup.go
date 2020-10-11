@@ -1,5 +1,5 @@
 /*
-Copyright 2016 The Kubernetes Authors.
+Copyright 2019 The Kubernetes Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -17,10 +17,8 @@ limitations under the License.
 package kops
 
 import (
-	"fmt"
-
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"k8s.io/klog"
+	"k8s.io/klog/v2"
 )
 
 const (
@@ -28,8 +26,6 @@ const (
 	LabelClusterName = "kops.k8s.io/cluster"
 	// NodeLabelInstanceGroup is a node label set to the name of the instance group
 	NodeLabelInstanceGroup = "kops.k8s.io/instancegroup"
-	// Deprecated - use the new labels & taints node-role.kubernetes.io/master and node-role.kubernetes.io/node
-	TaintNoScheduleMaster15 = "dedicated=master:NoSchedule"
 )
 
 // +genclient
@@ -106,10 +102,16 @@ type InstanceGroupSpec struct {
 	RootVolumeIops *int32 `json:"rootVolumeIops,omitempty"`
 	// RootVolumeOptimization enables EBS optimization for an instance
 	RootVolumeOptimization *bool `json:"rootVolumeOptimization,omitempty"`
+	// RootVolumeDeleteOnTermination configures root volume retention policy upon instance termination.
+	// The root volume is deleted by default. Cluster deletion does not remove retained root volumes.
+	// NOTE: This setting applies only to the Launch Configuration and does not affect Launch Templates.
+	RootVolumeDeleteOnTermination *bool `json:"rootVolumeDeleteOnTermination,omitempty"`
+	// RootVolumeEncryption enables EBS root volume encryption for an instance
+	RootVolumeEncryption *bool `json:"rootVolumeEncryption,omitempty"`
 	// Volumes is a collection of additional volumes to create for instances within this InstanceGroup
-	Volumes []*VolumeSpec `json:"volumes,omitempty"`
+	Volumes []VolumeSpec `json:"volumes,omitempty"`
 	// VolumeMounts a collection of volume mounts
-	VolumeMounts []*VolumeMountSpec `json:"volumeMounts,omitempty"`
+	VolumeMounts []VolumeMountSpec `json:"volumeMounts,omitempty"`
 	// Subnets is the names of the Subnets (as specified in the Cluster) where machines in this instance group should be placed
 	Subnets []string `json:"subnets,omitempty"`
 	// Zones is the names of the Zones where machines in this instance group should be placed
@@ -119,6 +121,8 @@ type InstanceGroupSpec struct {
 	Hooks []HookSpec `json:"hooks,omitempty"`
 	// MaxPrice indicates this is a spot-pricing group, with the specified value as our max-price bid
 	MaxPrice *string `json:"maxPrice,omitempty"`
+	// SpotDurationInMinutes reserves a spot block for the period specified
+	SpotDurationInMinutes *int64 `json:"spotDurationInMinutes,omitempty"`
 	// AssociatePublicIP is true if we want instances to have a public IP
 	AssociatePublicIP *bool `json:"associatePublicIp,omitempty"`
 	// AdditionalSecurityGroups attaches additional security groups (e.g. i-123456)
@@ -149,19 +153,32 @@ type InstanceGroupSpec struct {
 	IAM *IAMProfileSpec `json:"iam,omitempty"`
 	// SecurityGroupOverride overrides the default security group created by Kops for this IG (AWS only).
 	SecurityGroupOverride *string `json:"securityGroupOverride,omitempty"`
+	// InstanceProtection makes new instances in an autoscaling group protected from scale in
+	InstanceProtection *bool `json:"instanceProtection,omitempty"`
+	// SysctlParameters will configure kernel parameters using sysctl(8). When
+	// specified, each parameter must follow the form variable=value, the way
+	// it would appear in sysctl.conf.
+	SysctlParameters []string `json:"sysctlParameters,omitempty"`
+	// RollingUpdate defines the rolling-update behavior
+	RollingUpdate *RollingUpdate `json:"rollingUpdate,omitempty"`
+	// InstanceInterruptionBehavior defines if a spot instance should be terminated, hibernated,
+	// or stopped after interruption
+	InstanceInterruptionBehavior *string `json:"instanceInterruptionBehavior,omitempty"`
 }
 
 const (
-	// SpotAllocationStrategyLowestPrices indicates a lowest price strategy
-	SpotAllocationStrategyLowestPrices = "LowestPrice"
+	// SpotAllocationStrategyLowestPrices indicates a lowest-price strategy
+	SpotAllocationStrategyLowestPrices = "lowest-price"
 	// SpotAllocationStrategyDiversified indicates a diversified strategy
-	SpotAllocationStrategyDiversified = "Diversified"
+	SpotAllocationStrategyDiversified = "diversified"
+	// SpotAllocationStrategyCapacityOptimized indicates a capacity optimized strategy
+	SpotAllocationStrategyCapacityOptimized = "capacity-optimized"
 )
 
 // SpotAllocationStrategies is a collection of supported strategies
-var SpotAllocationStrategies = []string{SpotAllocationStrategyLowestPrices, SpotAllocationStrategyDiversified}
+var SpotAllocationStrategies = []string{SpotAllocationStrategyLowestPrices, SpotAllocationStrategyDiversified, SpotAllocationStrategyCapacityOptimized}
 
-// MixedInstancesPolicySpec defines the specification for an autoscaling backed by a ec2 fleet
+// MixedInstancesPolicySpec defines the specification for an autoscaling group backed by a ec2 fleet
 type MixedInstancesPolicySpec struct {
 	// Instances is a list of instance types which we are willing to run in the EC2 fleet
 	Instances []string `json:"instances,omitempty"`
@@ -196,6 +213,10 @@ type UserData struct {
 
 // VolumeSpec defined the spec for an additional volume attached to the instance group
 type VolumeSpec struct {
+	// DeleteOnTermination configures volume retention policy upon instance termination.
+	// The volume is deleted by default. Cluster deletion does not remove retained volumes.
+	// NOTE: This setting applies only to the Launch Configuration and does not affect Launch Templates.
+	DeleteOnTermination *bool `json:"deleteOnTermination,omitempty"`
 	// Device is an optional device name of the block device
 	Device string `json:"device,omitempty"`
 	// Encrypted indicates you want to encrypt the volume
@@ -230,33 +251,6 @@ type IAMProfileSpec struct {
 	Profile *string `json:"profile,omitempty"`
 }
 
-// PerformAssignmentsInstanceGroups populates InstanceGroups with default values
-func PerformAssignmentsInstanceGroups(groups []*InstanceGroup) error {
-	names := map[string]bool{}
-	for _, group := range groups {
-		names[group.ObjectMeta.Name] = true
-	}
-
-	for _, group := range groups {
-		// We want to give them a stable Name as soon as possible
-		if group.ObjectMeta.Name == "" {
-			// Loop to find the first unassigned name like `nodes-%d`
-			i := 0
-			for {
-				key := fmt.Sprintf("nodes-%d", i)
-				if !names[key] {
-					group.ObjectMeta.Name = key
-					names[key] = true
-					break
-				}
-				i++
-			}
-		}
-	}
-
-	return nil
-}
-
 // IsMaster checks if instanceGroup is a master
 func (g *InstanceGroup) IsMaster() bool {
 	switch g.Spec.Role {
@@ -289,12 +283,9 @@ func (g *InstanceGroup) IsBastion() bool {
 
 func (g *InstanceGroup) AddInstanceGroupNodeLabel() {
 	if g.Spec.NodeLabels == nil {
-		nodeLabels := make(map[string]string)
-		nodeLabels[NodeLabelInstanceGroup] = g.Name
-		g.Spec.NodeLabels = nodeLabels
-	} else {
-		g.Spec.NodeLabels[NodeLabelInstanceGroup] = g.Name
+		g.Spec.NodeLabels = make(map[string]string)
 	}
+	g.Spec.NodeLabels[NodeLabelInstanceGroup] = g.Name
 }
 
 // LoadBalancers defines a load balancer
