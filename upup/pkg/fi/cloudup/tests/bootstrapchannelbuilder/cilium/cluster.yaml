@@ -15,15 +15,15 @@ spec:
   - etcdMembers:
     - instanceGroup: master-us-test-1a
       name: master-us-test-1a
-    version: 3.1.11
+    version: 3.1.12
     name: main
   - etcdMembers:
     - instanceGroup: master-us-test-1a
       name: master-us-test-1a
-    version: 3.1.11
+    version: 3.1.12
     name: events
-  kubernetesVersion: 1.8.11
-  masterInternalName: api.internal.minimal.example.com
+  iam: {}
+  kubernetesVersion: 1.22.0
   masterPublicName: api.minimal.example.com
   additionalSans:
   - proxy.api.minimal.example.com

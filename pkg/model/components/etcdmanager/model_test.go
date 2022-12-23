@@ -1,5 +1,5 @@
 /*
-Copyright 2018 The Kubernetes Authors.
+Copyright 2019 The Kubernetes Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -18,37 +18,51 @@ package etcdmanager
 
 import (
 	"fmt"
+	"path/filepath"
 	"testing"
 
 	"k8s.io/kops/pkg/assets"
+	"k8s.io/kops/pkg/featureflag"
 	"k8s.io/kops/pkg/model"
+	"k8s.io/kops/pkg/model/iam"
 	"k8s.io/kops/pkg/testutils"
 	"k8s.io/kops/upup/pkg/fi"
 )
 
 func Test_RunEtcdManagerBuilder(t *testing.T) {
-	basedir := "tests/minimal"
-
-	context := &fi.ModelBuilderContext{
-		Tasks: make(map[string]fi.Task),
+	featureflag.ParseFlags("-ImageDigest")
+	tests := []string{
+		"tests/minimal",
+		"tests/interval",
+		"tests/proxy",
+		"tests/overwrite_settings",
 	}
-	kopsModelContext, err := LoadKopsModelContext(basedir)
-	if err != nil {
-		t.Fatalf("error loading model %q: %v", basedir, err)
-		return
-	}
+	for _, basedir := range tests {
+		basedir := basedir
 
-	builder := EtcdManagerBuilder{
-		KopsModelContext: kopsModelContext,
-		AssetBuilder:     assets.NewAssetBuilder(kopsModelContext.Cluster, ""),
-	}
+		t.Run(fmt.Sprintf("basedir=%s", basedir), func(t *testing.T) {
+			context := &fi.CloudupModelBuilderContext{
+				Tasks: make(map[string]fi.CloudupTask),
+			}
+			kopsModelContext, err := LoadKopsModelContext(basedir)
+			if err != nil {
+				t.Fatalf("error loading model %q: %v", basedir, err)
+				return
+			}
 
-	if err := builder.Build(context); err != nil {
-		t.Fatalf("error from Build: %v", err)
-		return
-	}
+			builder := EtcdManagerBuilder{
+				KopsModelContext: kopsModelContext,
+				AssetBuilder:     assets.NewAssetBuilder(kopsModelContext.Cluster, false),
+			}
 
-	testutils.ValidateTasks(t, basedir, context)
+			if err := builder.Build(context); err != nil {
+				t.Fatalf("error from Build: %v", err)
+				return
+			}
+
+			testutils.ValidateTasks(t, filepath.Join(basedir, "tasks.yaml"), context)
+		})
+	}
 }
 
 func LoadKopsModelContext(basedir string) (*model.KopsModelContext, error) {
@@ -66,8 +80,8 @@ func LoadKopsModelContext(basedir string) (*model.KopsModelContext, error) {
 	}
 
 	kopsContext := &model.KopsModelContext{
-		Cluster:        spec.Cluster,
-		InstanceGroups: spec.InstanceGroups,
+		IAMModelContext: iam.IAMModelContext{Cluster: spec.Cluster},
+		InstanceGroups:  spec.InstanceGroups,
 	}
 
 	return kopsContext, nil

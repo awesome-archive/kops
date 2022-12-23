@@ -1,9 +1,14 @@
-.md-typeset__table {
-    min-width: 100%;
-}
-
 @media only screen and (min-width: 768px){
 	td:nth-child(1){
 		white-space: nowrap;
 	}
+}
+
+.hidden {
+	display: none;
+}
+
+.md-content {
+  /* Needed so that content doesn't overflow under right sidebar (and not be copyable) */
+  overflow-wrap: break-word;
 }

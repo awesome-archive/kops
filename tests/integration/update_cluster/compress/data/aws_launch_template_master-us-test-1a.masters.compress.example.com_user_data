@@ -1,0 +1,150 @@
+Content-Type: multipart/mixed; boundary="MIMEBOUNDARY"
+MIME-Version: 1.0
+
+--MIMEBOUNDARY
+Content-Disposition: attachment; filename="nodeup.sh"
+Content-Transfer-Encoding: 7bit
+Content-Type: text/x-shellscript
+Mime-Version: 1.0
+
+#!/bin/bash
+set -o errexit
+set -o nounset
+set -o pipefail
+
+NODEUP_URL_AMD64=https://artifacts.k8s.io/binaries/kops/1.21.0-alpha.1/linux/amd64/nodeup,https://github.com/kubernetes/kops/releases/download/v1.21.0-alpha.1/nodeup-linux-amd64
+NODEUP_HASH_AMD64=585fbda0f0a43184656b4bfc0cc5f0c0b85612faf43b8816acca1f99d422c924
+NODEUP_URL_ARM64=https://artifacts.k8s.io/binaries/kops/1.21.0-alpha.1/linux/arm64/nodeup,https://github.com/kubernetes/kops/releases/download/v1.21.0-alpha.1/nodeup-linux-arm64
+NODEUP_HASH_ARM64=7603675379699105a9b9915ff97718ea99b1bbb01a4c184e2f827c8a96e8e865
+
+export AWS_REGION=us-test-1
+
+
+
+
+sysctl -w net.core.rmem_max=16777216 || true
+sysctl -w net.core.wmem_max=16777216 || true
+sysctl -w net.ipv4.tcp_rmem='4096 87380 16777216' || true
+sysctl -w net.ipv4.tcp_wmem='4096 87380 16777216' || true
+
+
+function ensure-install-dir() {
+  INSTALL_DIR="/opt/kops"
+  # On ContainerOS, we install under /var/lib/toolbox; /opt is ro and noexec
+  if [[ -d /var/lib/toolbox ]]; then
+    INSTALL_DIR="/var/lib/toolbox/kops"
+  fi
+  mkdir -p ${INSTALL_DIR}/bin
+  mkdir -p ${INSTALL_DIR}/conf
+  cd ${INSTALL_DIR}
+}
+
+# Retry a download until we get it. args: name, sha, urls
+download-or-bust() {
+  local -r file="$1"
+  local -r hash="$2"
+  local -r urls=( $(split-commas "$3") )
+
+  if [[ -f "${file}" ]]; then
+    if ! validate-hash "${file}" "${hash}"; then
+      rm -f "${file}"
+    else
+      return 0
+    fi
+  fi
+
+  while true; do
+    for url in "${urls[@]}"; do
+      commands=(
+        "curl -f --compressed -Lo "${file}" --connect-timeout 20 --retry 6 --retry-delay 10"
+        "wget --compression=auto -O "${file}" --connect-timeout=20 --tries=6 --wait=10"
+        "curl -f -Lo "${file}" --connect-timeout 20 --retry 6 --retry-delay 10"
+        "wget -O "${file}" --connect-timeout=20 --tries=6 --wait=10"
+      )
+      for cmd in "${commands[@]}"; do
+        echo "Attempting download with: ${cmd} {url}"
+        if ! (${cmd} "${url}"); then
+          echo "== Download failed with ${cmd} =="
+          continue
+        fi
+        if ! validate-hash "${file}" "${hash}"; then
+          echo "== Hash validation of ${url} failed. Retrying. =="
+          rm -f "${file}"
+        else
+          echo "== Downloaded ${url} (SHA256 = ${hash}) =="
+          return 0
+        fi
+      done
+    done
+
+    echo "All downloads failed; sleeping before retrying"
+    sleep 60
+  done
+}
+
+validate-hash() {
+  local -r file="$1"
+  local -r expected="$2"
+  local actual
+
+  actual=$(sha256sum ${file} | awk '{ print $1 }') || true
+  if [[ "${actual}" != "${expected}" ]]; then
+    echo "== ${file} corrupted, hash ${actual} doesn't match expected ${expected} =="
+    return 1
+  fi
+}
+
+function split-commas() {
+  echo $1 | tr "," "\n"
+}
+
+function download-release() {
+  case "$(uname -m)" in
+  x86_64*|i?86_64*|amd64*)
+    NODEUP_URL="${NODEUP_URL_AMD64}"
+    NODEUP_HASH="${NODEUP_HASH_AMD64}"
+    ;;
+  aarch64*|arm64*)
+    NODEUP_URL="${NODEUP_URL_ARM64}"
+    NODEUP_HASH="${NODEUP_HASH_ARM64}"
+    ;;
+  *)
+    echo "Unsupported host arch: $(uname -m)" >&2
+    exit 1
+    ;;
+  esac
+
+  cd ${INSTALL_DIR}/bin
+  download-or-bust nodeup "${NODEUP_HASH}" "${NODEUP_URL}"
+
+  chmod +x nodeup
+
+  echo "Running nodeup"
+  # We can't run in the foreground because of https://github.com/docker/docker/issues/23793
+  ( cd ${INSTALL_DIR}/bin; ./nodeup --install-systemd-unit --conf=${INSTALL_DIR}/conf/kube_env.yaml --v=8  )
+}
+
+####################################################################################
+
+/bin/systemd-machine-id-setup || echo "failed to set up ensure machine-id configured"
+
+echo "== nodeup node config starting =="
+ensure-install-dir
+
+echo "H4sIAAAAAAAA/+xWQXPbNhO961dg5pvcIlKM/aUtJxdVSmM1ccpKSdMrBKwoVCDALgDK6q/vLEBKsi3H08k14xlL3F0s3u6+fZTQNsiZNRtVlyPGGm54DStvkdcw09w5cCXzGGAkrPFcGcBlMF41ULKjRZ6ckrJoW3+ADnTJlNnYEWMdoFPWlKzIrrPiaiSt2AFSqNupdmGc51r394AReGi9sqaHxUzQegReyJkOzgM6OggdGB+/naW/SumpDmUu+3ZhDdNqsQLsEgKutd1XqDqloQbZo2CMG2sOjQ1uGvy2ZBuuXTS3ahqkAiMg3j5mlBENeHCZ60QmYcOD9ik0XTOzwfiSFWQLfmtR/cOpwFsroWRTvecHNyUYI8bWysiplAjOlWySxb8RY3FOFdpOScCS8b2jHhi+1jCVjXJUY6VDrUyP6iNvwLVcwAe1AXEQGqL5g2qUX3JTA8ZnAqgETIUgjNE0TwWck+Dc/slqwAh/BcIamZy3wXOvTH0E8wXWW2t30fkH10o+7f5oJSzBeVSC0kbbEpwNKOD3YD2nUr2QqZl9fVvvW1fmefHqh9ikoryeTIr7kb91gKjkMKg8ceZ/F4++GjGmGl5DyRBq5Twest2PLlM2pwGPeatc4kxXZK+KOBRyaPAVwgYQYZjbp0M7XLkwHtBwvaji44113vAmjeLt3ZnvtDIEBOHvAM5vgUvAyAyQcaApK69rhJp7iw9j39555DfxK6FSd8ORP8dLaKyHcYwYPzz3Dm1o07mHB6LrYfxnR9AbuHyEvLTbIAJCZdGX7Pr6KlrO2bZwLhCZh3nwVmWqb1gmbNNSMzO4402rgQyPMvz65f3q83LxH1LktgWjZN4V+V/7nTtl7LVlUcXlKFkxmWSvr4kfeVQUl9bhZy52YGQZaZbUZGaNR6s14G1Uz6OqCO6BuD1bzJfupCvec7GdA/1f0gYJpWF1MKICVFaWrGgm7qmNFwklZUwQf3qdIBYnJxGFxPli/0TU1IAwo/RLGzwJ/CBuX1sAcSxz3PR1njZBJ/ZpiBuclPfMdiz+Ps2Dg/v6M0OQYLzieugXXV2hvTuUz1bfhmWiaPQ1z5TTxqRnFZwho4CV2IIMOk3za4ncMfDb2tGLSfn0q0fUtIpzVKRCzB2ch0Ye7UtrfcnyZ5gz/7g643YxOfPY+NIcHjPirz6+ZOawDnWtTH3DjdS08kMN0CXZvuEoS9ZAY/GQ8Y4rTefeFJPJrXpprISNu2d+MRgVfbpfEODN/1+8jK1+FDpY78X2CpwoXXFqVd5xzLVa530381PAI/YZ8HuLu/TW7JfGqBFjrZULs0E+G37ULC6Pv+XBQXmVvU5nbrlRG3C+RwJe5KefBnnTe12UUkoE2HOMqjy2022Dl3Zv3iEXMEjCVVSEC64ZKq8E15WVjubqRg2nzO+/k+k7mb6dTP8CAAD//wEAAP//ZDsHch4MAAA=" | base64 -d | gzip -d > conf/cluster_spec.yaml
+
+echo "H4sIAAAAAAAA/1SOsU7DMBRFd3+FfyBN2SJLDNhDEyFKg0TT9eG80ES2n+VnQ8TXo6hT1qt7jo5xVMZLop95xKQk/LIwFKb5WwOjkh79xKqurSucMfEBV/DR4cGSry35mJB3o+gCZwgWT4lKPIPfJLCxVeEqI+fqCfanD3KopKGQE7mLg4DiTCOW+Ahpge9Kvr22TVqaqb++fPX97e929et7p08d6WNsBt1GM0QY7svx81n8AwAA//8BAAD//+IbB8fVAAAA" | base64 -d | gzip -d > conf/kube_env.yaml
+
+download-release
+echo "== nodeup node config done =="
+
+--MIMEBOUNDARY
+Content-Disposition: attachment; filename="myscript.sh"
+Content-Transfer-Encoding: 7bit
+Content-Type: text/x-shellscript
+Mime-Version: 1.0
+
+#!/bin/sh
+echo "nodes: The time is now $(date -R)!" | tee /root/output.txt
+
+--MIMEBOUNDARY--

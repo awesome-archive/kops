@@ -1,5 +1,5 @@
 /*
-Copyright 2016 The Kubernetes Authors.
+Copyright 2019 The Kubernetes Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -30,9 +30,9 @@ type Resource interface {
 	Open() (io.Reader, error)
 }
 
-type TemplateResource interface {
-	Resource
-	Curry(args []string) TemplateResource
+// HasIsReady is implemented by Resources that are derived (and thus may not be ready at comparison time)
+type HasIsReady interface {
+	IsReady() bool
 }
 
 func ResourcesMatch(a, b Resource) (bool, error) {
@@ -199,52 +199,57 @@ func (r *VFSResource) Open() (io.Reader, error) {
 	return b, err
 }
 
-// ResourceHolder is used in JSON/YAML models; it holds a resource but renders to/from a string
-// After unmarshaling, the resource should be found by Name, and set on Resource
-type ResourceHolder struct {
-	Name     string
-	Resource Resource
+type TaskDependentResource[T SubContext] struct {
+	Resource Resource `json:"resource,omitempty"`
+	Task     Task[T]  `json:"task,omitempty"`
 }
 
-var _ Resource = &ResourceHolder{}
+type CloudupTaskDependentResource = TaskDependentResource[CloudupSubContext]
+type NodeupTaskDependentResource = TaskDependentResource[NodeupSubContext]
 
-// Open implements the Open method of the Resource interface
-func (o *ResourceHolder) Open() (io.Reader, error) {
-	if o.Resource == nil {
-		return nil, fmt.Errorf("ResourceHolder %q is not bound", o.Name)
+var (
+	_ Resource                           = &TaskDependentResource[CloudupSubContext]{}
+	_ HasDependencies[CloudupSubContext] = &TaskDependentResource[CloudupSubContext]{}
+	_ HasIsReady                         = &TaskDependentResource[CloudupSubContext]{}
+)
+
+func (r *TaskDependentResource[T]) Open() (io.Reader, error) {
+	if r.Resource == nil {
+		return nil, fmt.Errorf("resource opened before it is ready (task=%v)", r.Task)
 	}
-	return o.Resource.Open()
+	return r.Resource.Open()
 }
 
-// UnmarshalJSON implements the special JSON marshaling for the resource, rendering the name
-func (o *ResourceHolder) UnmarshalJSON(data []byte) error {
-	var jsonName string
-	err := json.Unmarshal(data, &jsonName)
-	if err != nil {
-		return err
+func (r *TaskDependentResource[T]) GetDependencies(tasks map[string]Task[T]) []Task[T] {
+	return []Task[T]{r.Task}
+}
+
+// IsReady implements HasIsReady::IsReady
+func (r *TaskDependentResource[T]) IsReady() bool {
+	return r.Resource != nil
+}
+
+// FunctionToResource converts a function to a Resource.  The result of executing the function is cached.
+func FunctionToResource(fn func() ([]byte, error)) Resource {
+	return &functionResource{
+		fn: fn,
 	}
-	o.Name = jsonName
-	return nil
 }
 
-// Unwrap returns the underlying resource
-func (o *ResourceHolder) Unwrap() Resource {
-	return o.Resource
+type functionResource struct {
+	data []byte
+	fn   func() ([]byte, error)
 }
 
-// AsString returns the value of the resource as a string
-func (o *ResourceHolder) AsString() (string, error) {
-	return ResourceAsString(o.Unwrap())
-}
-
-// AsString returns the value of the resource as a byte-slice
-func (o *ResourceHolder) AsBytes() ([]byte, error) {
-	return ResourceAsBytes(o.Unwrap())
-}
-
-// WrapResource creates a ResourceHolder for the specified resource
-func WrapResource(r Resource) *ResourceHolder {
-	return &ResourceHolder{
-		Resource: r,
+func (r *functionResource) Open() (io.Reader, error) {
+	b := r.data
+	if b == nil {
+		data, err := r.fn()
+		if err != nil {
+			return nil, err
+		}
+		r.data = data
+		b = data
 	}
+	return bytes.NewReader(b), nil
 }

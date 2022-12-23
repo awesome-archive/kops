@@ -1,5 +1,5 @@
 /*
-Copyright 2016 The Kubernetes Authors.
+Copyright 2019 The Kubernetes Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -18,119 +18,129 @@ package fi
 
 import (
 	"bytes"
+	"context"
 	"fmt"
-	"io/ioutil"
 	"os"
 	"reflect"
 	"strings"
 
-	"k8s.io/klog"
-	"k8s.io/kops/dnsprovider/pkg/dnsprovider"
+	"k8s.io/klog/v2"
 	"k8s.io/kops/pkg/apis/kops"
+	"k8s.io/kops/pkg/apis/nodeup"
 	"k8s.io/kops/util/pkg/vfs"
 )
 
-type Context struct {
-	Tmpdir string
+type Context[T SubContext] struct {
+	ctx context.Context
 
-	Target            Target
-	DNS               dnsprovider.Interface
-	Cloud             Cloud
-	Cluster           *kops.Cluster
+	Target Target[T]
+
+	tasks    map[string]Task[T]
+	warnings []*Warning[T]
+
+	T T
+}
+
+type CloudupContext = Context[CloudupSubContext]
+type InstallContext = Context[InstallSubContext]
+type NodeupContext = Context[NodeupSubContext]
+
+type SubContext interface {
+	CloudupSubContext | InstallSubContext | NodeupSubContext
+}
+
+type CloudupSubContext struct {
+	Cloud   Cloud
+	Cluster *kops.Cluster
+	// TODO: Few places use this. They could instead get it from the cluster spec.
+	ClusterConfigBase vfs.Path
 	Keystore          Keystore
 	SecretStore       SecretStore
-	ClusterConfigBase vfs.Path
+}
+type InstallSubContext struct{}
+type NodeupSubContext struct {
+	BootConfig   *nodeup.BootConfig
+	NodeupConfig *nodeup.Config
+	Keystore     KeystoreReader
+}
 
-	CheckExisting bool
-
-	tasks map[string]Task
-
-	warnings []*Warning
+func (c *Context[T]) Context() context.Context {
+	return c.ctx
 }
 
 // Warning holds the details of a warning encountered during validation/creation
-type Warning struct {
-	Task    Task
+type Warning[T SubContext] struct {
+	Task    Task[T]
 	Message string
 }
 
-func NewContext(target Target, cluster *kops.Cluster, cloud Cloud, keystore Keystore, secretStore SecretStore, clusterConfigBase vfs.Path, checkExisting bool, tasks map[string]Task) (*Context, error) {
-	c := &Context{
-		Cloud:             cloud,
-		Cluster:           cluster,
-		Target:            target,
-		Keystore:          keystore,
-		SecretStore:       secretStore,
-		ClusterConfigBase: clusterConfigBase,
-		CheckExisting:     checkExisting,
-		tasks:             tasks,
+func newContext[T SubContext](ctx context.Context, target Target[T], sub T, tasks map[string]Task[T]) (*Context[T], error) {
+	c := &Context[T]{
+		ctx:    ctx,
+		Target: target,
+		tasks:  tasks,
+		T:      sub,
 	}
-
-	t, err := ioutil.TempDir("", "deploy")
-	if err != nil {
-		return nil, fmt.Errorf("error creating temporary directory: %v", err)
-	}
-	c.Tmpdir = t
 
 	return c, nil
 }
 
-func (c *Context) AllTasks() map[string]Task {
+func NewInstallContext(ctx context.Context, target InstallTarget, tasks map[string]InstallTask) (*InstallContext, error) {
+	sub := InstallSubContext{}
+	return newContext[InstallSubContext](ctx, target, sub, tasks)
+}
+func NewNodeupContext(ctx context.Context, target NodeupTarget, keystore KeystoreReader, bootConfig *nodeup.BootConfig, nodeupConfig *nodeup.Config, tasks map[string]NodeupTask) (*NodeupContext, error) {
+	sub := NodeupSubContext{
+		BootConfig:   bootConfig,
+		NodeupConfig: nodeupConfig,
+		Keystore:     keystore,
+	}
+	return newContext[NodeupSubContext](ctx, target, sub, tasks)
+}
+
+func NewCloudupContext(ctx context.Context, target CloudupTarget, cluster *kops.Cluster, cloud Cloud, keystore Keystore, secretStore SecretStore, clusterConfigBase vfs.Path, tasks map[string]CloudupTask) (*CloudupContext, error) {
+	sub := CloudupSubContext{
+		Cloud:             cloud,
+		Cluster:           cluster,
+		ClusterConfigBase: clusterConfigBase,
+		Keystore:          keystore,
+		SecretStore:       secretStore,
+	}
+	return newContext[CloudupSubContext](ctx, target, sub, tasks)
+}
+
+func (c *Context[T]) AllTasks() map[string]Task[T] {
 	return c.tasks
 }
 
-func (c *Context) RunTasks(options RunTasksOptions) error {
-	e := &executor{
+func (c *Context[T]) RunTasks(options RunTasksOptions) error {
+	e := &executor[T]{
 		context: c,
 		options: options,
 	}
 	return e.RunTasks(c.tasks)
 }
 
-func (c *Context) Close() {
-	klog.V(2).Infof("deleting temp dir: %q", c.Tmpdir)
-	if c.Tmpdir != "" {
-		err := os.RemoveAll(c.Tmpdir)
-		if err != nil {
-			klog.Warningf("unable to delete temporary directory %q: %v", c.Tmpdir, err)
-		}
-	}
-}
-
-//func (c *Context) MergeOptions(options Options) error {
-//	return c.Options.Merge(options)
-//}
-
-func (c *Context) NewTempDir(prefix string) (string, error) {
-	t, err := ioutil.TempDir(c.Tmpdir, prefix)
-	if err != nil {
-		return "", fmt.Errorf("error creating temporary directory: %v", err)
-	}
-	return t, nil
-}
-
-var typeContextPtr = reflect.TypeOf((*Context)(nil))
-
 // Render dispatches the creation of an object to the appropriate handler defined on the Task,
 // it is typically called after we have checked the existing state of the Task and determined that is different
 // from the desired state.
-func (c *Context) Render(a, e, changes Task) error {
-	var lifecycle *Lifecycle
+func (c *Context[T]) Render(a, e, changes Task[T]) error {
+	typeContextPtr := reflect.TypeOf((*Context[T])(nil))
+	var lifecycle Lifecycle
 	if hl, ok := e.(HasLifecycle); ok {
 		lifecycle = hl.GetLifecycle()
 	}
 
-	if lifecycle != nil {
+	if lifecycle != "" {
 		if reflect.ValueOf(a).IsNil() {
-
-			switch *lifecycle {
+			switch lifecycle {
 			case LifecycleExistsAndValidates:
-				return fmt.Errorf("Lifecycle set to ExistsAndValidates, but object was not found")
+				return fmt.Errorf("lifecycle set to ExistsAndValidates, but object was not found")
 			case LifecycleExistsAndWarnIfChanges:
 				return NewExistsAndWarnIfChangesError("Lifecycle set to ExistsAndWarnIfChanges and object was not found.")
 			}
 		} else {
-			switch *lifecycle {
+			switch lifecycle {
 			case LifecycleExistsAndValidates, LifecycleExistsAndWarnIfChanges:
 
 				out := os.Stderr
@@ -157,18 +167,17 @@ func (c *Context) Render(a, e, changes Task) error {
 				fmt.Fprintf(b, "\n")
 				b.WriteTo(out)
 
-				if *lifecycle == LifecycleExistsAndValidates {
-					return fmt.Errorf("Lifecycle set to ExistsAndValidates, but object did not match")
-				} else {
-					// Warn, but then we continue
-					return nil
+				if lifecycle == LifecycleExistsAndValidates {
+					return fmt.Errorf("lifecycle set to ExistsAndValidates, but object did not match")
 				}
+				// Warn, but then we continue
+				return nil
 			}
 		}
 	}
 
-	if _, ok := c.Target.(*DryRunTarget); ok {
-		return c.Target.(*DryRunTarget).Render(a, e, changes)
+	if _, ok := c.Target.(*DryRunTarget[T]); ok {
+		return c.Target.(*DryRunTarget[T]).Render(a, e, changes)
 	}
 
 	v := reflect.ValueOf(e)
@@ -205,7 +214,12 @@ func (c *Context) Render(a, e, changes Task) error {
 		}
 		if match {
 			if renderer != nil {
-				return fmt.Errorf("Found multiple Render methods that could be invokved on %T", e)
+				if method.Name == "Render" {
+					continue
+				}
+				if renderer.Name != "Render" {
+					return fmt.Errorf("found multiple Render methods that could be involved on %T", e)
+				}
 			}
 			renderer = &method
 			rendererArgs = args
@@ -213,7 +227,7 @@ func (c *Context) Render(a, e, changes Task) error {
 
 	}
 	if renderer == nil {
-		return fmt.Errorf("Could not find Render method on type %T (target %T)", e, c.Target)
+		return fmt.Errorf("could not find Render method on type %T (target %T)", e, c.Target)
 	}
 	rendererArgs = append(rendererArgs, reflect.ValueOf(a))
 	rendererArgs = append(rendererArgs, reflect.ValueOf(e))
@@ -230,8 +244,8 @@ func (c *Context) Render(a, e, changes Task) error {
 
 // AddWarning records a warning encountered during validation / creation.
 // Typically this will be an error that we choose to ignore because of Lifecycle.
-func (c *Context) AddWarning(task Task, message string) {
-	warning := &Warning{
+func (c *Context[T]) AddWarning(task Task[T], message string) {
+	warning := &Warning[T]{
 		Task:    task,
 		Message: message,
 	}
@@ -247,7 +261,7 @@ type ExistsAndWarnIfChangesError struct {
 	msg string
 }
 
-// NewWarnIfInsufficientAccessError is a builder for ExistsAndWarnIfChangesError.
+// NewExistsAndWarnIfChangesError is a builder for ExistsAndWarnIfChangesError.
 func NewExistsAndWarnIfChangesError(message string) *ExistsAndWarnIfChangesError {
 	return &ExistsAndWarnIfChangesError{
 		msg: message,
@@ -256,3 +270,18 @@ func NewExistsAndWarnIfChangesError(message string) *ExistsAndWarnIfChangesError
 
 // ExistsAndWarnIfChangesError implementation of the error interface.
 func (e *ExistsAndWarnIfChangesError) Error() string { return e.msg }
+
+// TryAgainLaterError is the custom used when a task needs to fail validation with a message and try again later
+type TryAgainLaterError struct {
+	msg string
+}
+
+// NewTryAgainLaterError is a builder for TryAgainLaterError.
+func NewTryAgainLaterError(message string) *TryAgainLaterError {
+	return &TryAgainLaterError{
+		msg: message,
+	}
+}
+
+// TryAgainLaterError implementation of the error interface.
+func (e *TryAgainLaterError) Error() string { return e.msg }

@@ -1,0 +1,19 @@
+APIServerConfig:
+  KubeAPIServer:
+    image: CoreOS
+  ServiceAccountPublicKeys: ""
+CAs: {}
+FileAssets:
+- content: user,token
+  name: tokens
+  path: /kube/tokens.csv
+Hooks:
+- - manifest: |-
+      Type=oneshot
+      ExecStart=/usr/bin/systemctl start apply-to-all.service
+    name: apply-to-all.service
+- null
+KeypairIDs: {}
+KubeletConfig:
+  kubeconfigPath: /etc/kubernetes/igconfig.txt
+UpdatePolicy: automatic

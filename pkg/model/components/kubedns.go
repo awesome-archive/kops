@@ -1,5 +1,5 @@
 /*
-Copyright 2016 The Kubernetes Authors.
+Copyright 2019 The Kubernetes Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -18,7 +18,9 @@ package components
 
 import (
 	"k8s.io/apimachinery/pkg/api/resource"
+
 	"k8s.io/kops/pkg/apis/kops"
+	"k8s.io/kops/upup/pkg/fi"
 	"k8s.io/kops/upup/pkg/fi/loader"
 )
 
@@ -36,8 +38,6 @@ func (b *KubeDnsOptionsBuilder) BuildOptions(o interface{}) error {
 	if clusterSpec.KubeDNS == nil {
 		clusterSpec.KubeDNS = &kops.KubeDNSConfig{}
 	}
-
-	clusterSpec.KubeDNS.Replicas = 2
 
 	if clusterSpec.KubeDNS.CacheMaxSize == 0 {
 		clusterSpec.KubeDNS.CacheMaxSize = 1000
@@ -72,6 +72,45 @@ func (b *KubeDnsOptionsBuilder) BuildOptions(o interface{}) error {
 	if clusterSpec.KubeDNS.MemoryLimit == nil || clusterSpec.KubeDNS.MemoryLimit.IsZero() {
 		defaultMemoryLimit := resource.MustParse("170Mi")
 		clusterSpec.KubeDNS.MemoryLimit = &defaultMemoryLimit
+	}
+
+	if clusterSpec.IsIPv6Only() && clusterSpec.GetCloudProvider() == kops.CloudProviderAWS {
+		if len(clusterSpec.KubeDNS.UpstreamNameservers) == 0 {
+			clusterSpec.KubeDNS.UpstreamNameservers = []string{"fd00:ec2::253"}
+		}
+	}
+
+	nodeLocalDNS := clusterSpec.KubeDNS.NodeLocalDNS
+	if nodeLocalDNS == nil {
+		nodeLocalDNS = &kops.NodeLocalDNSConfig{}
+		clusterSpec.KubeDNS.NodeLocalDNS = nodeLocalDNS
+	}
+	if nodeLocalDNS.Enabled == nil {
+		nodeLocalDNS.Enabled = fi.PtrTo(false)
+	}
+	if fi.ValueOf(nodeLocalDNS.Enabled) && nodeLocalDNS.LocalIP == "" {
+		if clusterSpec.IsIPv6Only() {
+			nodeLocalDNS.LocalIP = "fd00:90de:d95::1"
+		} else {
+			nodeLocalDNS.LocalIP = "169.254.20.10"
+		}
+	}
+	if fi.ValueOf(nodeLocalDNS.Enabled) && nodeLocalDNS.ForwardToKubeDNS == nil {
+		nodeLocalDNS.ForwardToKubeDNS = fi.PtrTo(false)
+	}
+
+	if nodeLocalDNS.MemoryRequest == nil || nodeLocalDNS.MemoryRequest.IsZero() {
+		defaultMemoryRequest := resource.MustParse("5Mi")
+		nodeLocalDNS.MemoryRequest = &defaultMemoryRequest
+	}
+
+	if nodeLocalDNS.CPURequest == nil || nodeLocalDNS.CPURequest.IsZero() {
+		defaultCPURequest := resource.MustParse("25m")
+		nodeLocalDNS.CPURequest = &defaultCPURequest
+	}
+
+	if nodeLocalDNS.Image == nil {
+		nodeLocalDNS.Image = fi.PtrTo("registry.k8s.io/dns/k8s-dns-node-cache:1.22.15")
 	}
 
 	return nil

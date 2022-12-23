@@ -26,10 +26,14 @@ import (
 )
 
 func (c *openstackCloud) ListSubnets(opt subnets.ListOptsBuilder) ([]subnets.Subnet, error) {
+	return listSubnets(c, opt)
+}
+
+func listSubnets(c OpenstackCloud, opt subnets.ListOptsBuilder) ([]subnets.Subnet, error) {
 	var s []subnets.Subnet
 
 	done, err := vfs.RetryWithBackoff(readBackoff, func() (bool, error) {
-		allPages, err := subnets.List(c.neutronClient, opt).AllPages()
+		allPages, err := subnets.List(c.NetworkingClient(), opt).AllPages()
 		if err != nil {
 			return false, fmt.Errorf("error listing subnets: %v", err)
 		}
@@ -50,11 +54,38 @@ func (c *openstackCloud) ListSubnets(opt subnets.ListOptsBuilder) ([]subnets.Sub
 	}
 }
 
+func (c *openstackCloud) GetSubnet(subnetID string) (*subnets.Subnet, error) {
+	return getSubnet(c, subnetID)
+}
+
+func getSubnet(c OpenstackCloud, subnetID string) (*subnets.Subnet, error) {
+	var subnet *subnets.Subnet
+	done, err := vfs.RetryWithBackoff(readBackoff, func() (bool, error) {
+		sub, err := subnets.Get(c.NetworkingClient(), subnetID).Extract()
+		if err != nil {
+			return false, fmt.Errorf("error retrieving subnet: %v", err)
+		}
+		subnet = sub
+		return true, nil
+	})
+	if err != nil {
+		return nil, err
+	} else if done {
+		return subnet, nil
+	} else {
+		return nil, wait.ErrWaitTimeout
+	}
+}
+
 func (c *openstackCloud) CreateSubnet(opt subnets.CreateOptsBuilder) (*subnets.Subnet, error) {
+	return createSubnet(c, opt)
+}
+
+func createSubnet(c OpenstackCloud, opt subnets.CreateOptsBuilder) (*subnets.Subnet, error) {
 	var s *subnets.Subnet
 
 	done, err := vfs.RetryWithBackoff(writeBackoff, func() (bool, error) {
-		v, err := subnets.Create(c.neutronClient, opt).Extract()
+		v, err := subnets.Create(c.NetworkingClient(), opt).Extract()
 		if err != nil {
 			return false, fmt.Errorf("error creating subnet: %v", err)
 		}
@@ -71,12 +102,19 @@ func (c *openstackCloud) CreateSubnet(opt subnets.CreateOptsBuilder) (*subnets.S
 }
 
 func (c *openstackCloud) DeleteSubnet(subnetID string) error {
-	done, err := vfs.RetryWithBackoff(writeBackoff, func() (bool, error) {
-		err := subnets.Delete(c.neutronClient, subnetID).ExtractErr()
+	return deleteSubnet(c, subnetID)
+}
+
+func deleteSubnet(c OpenstackCloud, subnetID string) error {
+	done, err := vfs.RetryWithBackoff(deleteBackoff, func() (bool, error) {
+		err := subnets.Delete(c.NetworkingClient(), subnetID).ExtractErr()
 		if err != nil && !isNotFound(err) {
 			return false, fmt.Errorf("error deleting subnet: %v", err)
 		}
-		return true, nil
+		if isNotFound(err) {
+			return true, nil
+		}
+		return false, nil
 	})
 	if err != nil {
 		return err
@@ -88,12 +126,16 @@ func (c *openstackCloud) DeleteSubnet(subnetID string) error {
 }
 
 func (c *openstackCloud) GetExternalSubnet() (subnet *subnets.Subnet, err error) {
-	if c.extSubnetName == nil {
+	return getExternalSubnet(c, c.extSubnetName)
+}
+
+func getExternalSubnet(c OpenstackCloud, subnetName *string) (subnet *subnets.Subnet, err error) {
+	if subnetName == nil {
 		return nil, nil
 	}
 
 	subnets, err := c.ListSubnets(subnets.ListOpts{
-		Name: fi.StringValue(c.extSubnetName),
+		Name: fi.ValueOf(subnetName),
 	})
 	if err != nil {
 		return nil, err
@@ -106,12 +148,16 @@ func (c *openstackCloud) GetExternalSubnet() (subnet *subnets.Subnet, err error)
 }
 
 func (c *openstackCloud) GetLBFloatingSubnet() (subnet *subnets.Subnet, err error) {
-	if c.floatingSubnet == nil {
+	return getLBFloatingSubnet(c, c.floatingSubnet)
+}
+
+func getLBFloatingSubnet(c OpenstackCloud, floatingSubnet *string) (subnet *subnets.Subnet, err error) {
+	if floatingSubnet == nil {
 		return nil, nil
 	}
 
 	subnets, err := c.ListSubnets(subnets.ListOpts{
-		Name: fi.StringValue(c.floatingSubnet),
+		Name: fi.ValueOf(floatingSubnet),
 	})
 	if err != nil {
 		return nil, err

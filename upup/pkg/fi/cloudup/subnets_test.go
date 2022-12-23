@@ -1,5 +1,5 @@
 /*
-Copyright 2016 The Kubernetes Authors.
+Copyright 2019 The Kubernetes Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -78,6 +78,37 @@ func Test_AssignSubnets(t *testing.T) {
 		},
 		{
 			subnets: []kops.ClusterSubnetSpec{
+				{Name: "a", Zone: "a", CIDR: "", IPv6CIDR: "/64#0", Type: kops.SubnetTypePublic},
+				{Name: "a", Zone: "a", CIDR: "", IPv6CIDR: "/64#1", Type: kops.SubnetTypeUtility},
+			},
+			expected: []string{"10.32.0.0/11", "10.0.0.0/14"},
+		},
+		{
+			subnets: []kops.ClusterSubnetSpec{
+				{Name: "a", Zone: "a", CIDR: "10.1.0.0/16", Type: kops.SubnetTypePrivate},
+			},
+			expected: []string{"10.1.0.0/16"},
+		},
+		{
+			subnets: []kops.ClusterSubnetSpec{
+				{Name: "a", Zone: "a", CIDR: "", Type: kops.SubnetTypePrivate},
+			},
+			expected: []string{"10.32.0.0/11"},
+		},
+		{
+			subnets: []kops.ClusterSubnetSpec{
+				{Name: "a", Zone: "a", CIDR: "", IPv6CIDR: "/64#0", Type: kops.SubnetTypePrivate},
+			},
+			expected: []string{""},
+		},
+		{
+			subnets: []kops.ClusterSubnetSpec{
+				{Name: "a", Zone: "a", CIDR: "", IPv6CIDR: "/64#0", Type: kops.SubnetTypeDualStack},
+			},
+			expected: []string{"10.32.0.0/11"},
+		},
+		{
+			subnets: []kops.ClusterSubnetSpec{
 				{Name: "a", Zone: "a", CIDR: "", Type: kops.SubnetTypePublic},
 				{Name: "a", Zone: "a", CIDR: "", Type: kops.SubnetTypeUtility},
 				{Name: "b", Zone: "b", CIDR: "", Type: kops.SubnetTypePublic},
@@ -96,16 +127,16 @@ func Test_AssignSubnets(t *testing.T) {
 	}
 	for i, test := range tests {
 		c := &kops.Cluster{}
-		c.Spec.NetworkCIDR = "10.0.0.0/8"
-		c.Spec.Subnets = test.subnets
+		c.Spec.Networking.NetworkCIDR = "10.0.0.0/8"
+		c.Spec.Networking.Subnets = test.subnets
 
-		err := assignCIDRsToSubnets(c)
+		err := assignCIDRsToSubnets(c, nil)
 		if err != nil {
 			t.Fatalf("unexpected error on test %d: %v", i+1, err)
 		}
 
 		var actual []string
-		for _, subnet := range c.Spec.Subnets {
+		for _, subnet := range c.Spec.Networking.Subnets {
 			actual = append(actual, subnet.CIDR)
 		}
 		if !reflect.DeepEqual(actual, test.expected) {

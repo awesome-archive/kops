@@ -1,7 +1,7 @@
 apiVersion: kops.k8s.io/v1alpha2
 kind: Cluster
 metadata:
-  creationTimestamp: 2017-01-01T00:00:00Z
+  creationTimestamp: "2017-01-01T00:00:00Z"
   name: ha-gce.example.com
 spec:
   api:
@@ -9,44 +9,50 @@ spec:
   authorization:
     rbac: {}
   channel: stable
+  cloudConfig: {}
   cloudProvider: gce
   configBase: memfs://tests/ha-gce.example.com
   etcdClusters:
   - cpuRequest: 200m
     etcdMembers:
-    - instanceGroup: master-us-test1-a
+    - instanceGroup: control-plane-us-test1-a
       name: a
-    - instanceGroup: master-us-test1-b
+    - instanceGroup: control-plane-us-test1-b
       name: b
-    - instanceGroup: master-us-test1-c
+    - instanceGroup: control-plane-us-test1-c
       name: c
     memoryRequest: 100Mi
     name: main
   - cpuRequest: 100m
     etcdMembers:
-    - instanceGroup: master-us-test1-a
+    - instanceGroup: control-plane-us-test1-a
       name: a
-    - instanceGroup: master-us-test1-b
+    - instanceGroup: control-plane-us-test1-b
       name: b
-    - instanceGroup: master-us-test1-c
+    - instanceGroup: control-plane-us-test1-c
       name: c
     memoryRequest: 100Mi
     name: events
   iam:
     allowContainerRegistry: true
     legacy: false
+  kubelet:
+    anonymousAuth: false
   kubernetesApiAccess:
   - 0.0.0.0/0
-  kubernetesVersion: v1.8.0-beta.1
+  - ::/0
+  kubernetesVersion: v1.26.0
   masterPublicName: api.ha-gce.example.com
   networking:
-    kubenet: {}
+    cni: {}
   nonMasqueradeCIDR: 100.64.0.0/10
   project: testproject
   sshAccess:
   - 0.0.0.0/0
+  - ::/0
   subnets:
-  - name: us-test1
+  - cidr: 10.0.16.0/20
+    name: us-test1
     region: us-test1
     type: Public
   topology:
@@ -60,17 +66,15 @@ spec:
 apiVersion: kops.k8s.io/v1alpha2
 kind: InstanceGroup
 metadata:
-  creationTimestamp: 2017-01-01T00:00:00Z
+  creationTimestamp: "2017-01-01T00:00:00Z"
   labels:
     kops.k8s.io/cluster: ha-gce.example.com
-  name: master-us-test1-a
+  name: control-plane-us-test1-a
 spec:
-  image: cos-cloud/cos-stable-65-10323-99-0
-  machineType: n1-standard-1
+  image: ubuntu-os-cloud/ubuntu-2004-focal-v20221018
+  machineType: e2-medium
   maxSize: 1
   minSize: 1
-  nodeLabels:
-    kops.k8s.io/instancegroup: master-us-test1-a
   role: Master
   subnets:
   - us-test1
@@ -82,17 +86,15 @@ spec:
 apiVersion: kops.k8s.io/v1alpha2
 kind: InstanceGroup
 metadata:
-  creationTimestamp: 2017-01-01T00:00:00Z
+  creationTimestamp: "2017-01-01T00:00:00Z"
   labels:
     kops.k8s.io/cluster: ha-gce.example.com
-  name: master-us-test1-b
+  name: control-plane-us-test1-b
 spec:
-  image: cos-cloud/cos-stable-65-10323-99-0
-  machineType: n1-standard-1
+  image: ubuntu-os-cloud/ubuntu-2004-focal-v20221018
+  machineType: e2-medium
   maxSize: 1
   minSize: 1
-  nodeLabels:
-    kops.k8s.io/instancegroup: master-us-test1-b
   role: Master
   subnets:
   - us-test1
@@ -104,17 +106,15 @@ spec:
 apiVersion: kops.k8s.io/v1alpha2
 kind: InstanceGroup
 metadata:
-  creationTimestamp: 2017-01-01T00:00:00Z
+  creationTimestamp: "2017-01-01T00:00:00Z"
   labels:
     kops.k8s.io/cluster: ha-gce.example.com
-  name: master-us-test1-c
+  name: control-plane-us-test1-c
 spec:
-  image: cos-cloud/cos-stable-65-10323-99-0
-  machineType: n1-standard-1
+  image: ubuntu-os-cloud/ubuntu-2004-focal-v20221018
+  machineType: e2-medium
   maxSize: 1
   minSize: 1
-  nodeLabels:
-    kops.k8s.io/instancegroup: master-us-test1-c
   role: Master
   subnets:
   - us-test1
@@ -126,21 +126,57 @@ spec:
 apiVersion: kops.k8s.io/v1alpha2
 kind: InstanceGroup
 metadata:
-  creationTimestamp: 2017-01-01T00:00:00Z
+  creationTimestamp: "2017-01-01T00:00:00Z"
   labels:
     kops.k8s.io/cluster: ha-gce.example.com
-  name: nodes
+  name: nodes-us-test1-a
 spec:
-  image: cos-cloud/cos-stable-65-10323-99-0
-  machineType: n1-standard-2
-  maxSize: 2
-  minSize: 2
-  nodeLabels:
-    kops.k8s.io/instancegroup: nodes
+  image: ubuntu-os-cloud/ubuntu-2004-focal-v20221018
+  machineType: e2-medium
+  maxSize: 1
+  minSize: 1
   role: Node
   subnets:
   - us-test1
   zones:
   - us-test1-a
+
+---
+
+apiVersion: kops.k8s.io/v1alpha2
+kind: InstanceGroup
+metadata:
+  creationTimestamp: "2017-01-01T00:00:00Z"
+  labels:
+    kops.k8s.io/cluster: ha-gce.example.com
+  name: nodes-us-test1-b
+spec:
+  image: ubuntu-os-cloud/ubuntu-2004-focal-v20221018
+  machineType: e2-medium
+  maxSize: 1
+  minSize: 1
+  role: Node
+  subnets:
+  - us-test1
+  zones:
   - us-test1-b
+
+---
+
+apiVersion: kops.k8s.io/v1alpha2
+kind: InstanceGroup
+metadata:
+  creationTimestamp: "2017-01-01T00:00:00Z"
+  labels:
+    kops.k8s.io/cluster: ha-gce.example.com
+  name: nodes-us-test1-c
+spec:
+  image: ubuntu-os-cloud/ubuntu-2004-focal-v20221018
+  machineType: e2-medium
+  maxSize: 1
+  minSize: 1
+  role: Node
+  subnets:
+  - us-test1
+  zones:
   - us-test1-c

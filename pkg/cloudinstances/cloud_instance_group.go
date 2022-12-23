@@ -1,5 +1,5 @@
 /*
-Copyright 2016 The Kubernetes Authors.
+Copyright 2019 The Kubernetes Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -21,79 +21,115 @@ import (
 	"strings"
 
 	v1 "k8s.io/api/core/v1"
-	"k8s.io/klog"
-	"k8s.io/kops/pkg/apis/kops"
-	api "k8s.io/kops/pkg/apis/kops"
+	"k8s.io/klog/v2"
+	kopsapi "k8s.io/kops/pkg/apis/kops"
 )
 
 // CloudInstanceGroup is the cloud backing of InstanceGroup.
 type CloudInstanceGroup struct {
 	// HumanName is a user-friendly name for the group
 	HumanName     string
-	InstanceGroup *api.InstanceGroup
-	Ready         []*CloudInstanceGroupMember
-	NeedUpdate    []*CloudInstanceGroupMember
+	InstanceGroup *kopsapi.InstanceGroup
+	Ready         []*CloudInstance
+	NeedUpdate    []*CloudInstance
 	MinSize       int
+	TargetSize    int
 	MaxSize       int
 
 	// Raw allows for the implementer to attach an object, for tracking additional state
 	Raw interface{}
 }
 
-// CloudInstanceGroupMember describes an instance in a CloudInstanceGroup group.
-type CloudInstanceGroupMember struct {
-	// ID is a unique identifier for the instance, meaningful to the cloud
-	ID string
-	// Node is the associated k8s instance, if it is known
-	Node *v1.Node
-	// CloudInstanceGroup is the managing CloudInstanceGroup
-	CloudInstanceGroup *CloudInstanceGroup
-}
-
-// NewCloudInstanceGroupMember creates a new CloudInstanceGroupMember
-func (c *CloudInstanceGroup) NewCloudInstanceGroupMember(instanceId string, newGroupName string, currentGroupName string, nodeMap map[string]*v1.Node) error {
+// NewCloudInstance creates a new CloudInstance
+func (c *CloudInstanceGroup) NewCloudInstance(instanceId string, status string, node *v1.Node) (*CloudInstance, error) {
 	if instanceId == "" {
-		return fmt.Errorf("instance id for cloud instance member cannot be empty")
+		return nil, fmt.Errorf("instance id for cloud instance member cannot be empty")
 	}
-	cm := &CloudInstanceGroupMember{
+	cm := &CloudInstance{
 		ID:                 instanceId,
 		CloudInstanceGroup: c,
 	}
-	node := nodeMap[instanceId]
-	if node != nil {
-		cm.Node = node
-	} else {
-		klog.V(8).Infof("unable to find node for instance: %s", instanceId)
-	}
 
-	if newGroupName == currentGroupName {
+	if status == CloudInstanceStatusUpToDate {
 		c.Ready = append(c.Ready, cm)
 	} else {
 		c.NeedUpdate = append(c.NeedUpdate, cm)
 	}
 
-	return nil
+	cm.Status = status
+
+	if node != nil {
+		cm.Node = node
+	} else {
+		klog.V(8).Infof("unable to find node for instance: %s", instanceId)
+	}
+	return cm, nil
 }
 
 // Status returns a human-readable Status indicating whether an update is needed
 func (c *CloudInstanceGroup) Status() string {
 	if len(c.NeedUpdate) == 0 {
 		return "Ready"
-	} else {
-		return "NeedsUpdate"
+	}
+	return "NeedsUpdate"
+}
+
+func (group *CloudInstanceGroup) AdjustNeedUpdate() {
+	if group.Ready != nil {
+		var newReady []*CloudInstance
+		for _, member := range group.Ready {
+			makeNotReady := false
+			if member.Node != nil && member.Node.Annotations != nil {
+				if _, ok := member.Node.Annotations["kops.k8s.io/needs-update"]; ok {
+					makeNotReady = true
+				}
+			}
+
+			if makeNotReady {
+				group.NeedUpdate = append(group.NeedUpdate, member)
+				member.Status = CloudInstanceStatusNeedsUpdate
+			} else {
+				newReady = append(newReady, member)
+			}
+		}
+		group.Ready = newReady
 	}
 }
 
 // GetNodeMap returns a list of nodes keyed by their external id
-func GetNodeMap(nodes []v1.Node, cluster *kops.Cluster) map[string]*v1.Node {
+func GetNodeMap(nodes []v1.Node, cluster *kopsapi.Cluster) map[string]*v1.Node {
 	nodeMap := make(map[string]*v1.Node)
+
+	if cluster.Spec.GetCloudProvider() == kopsapi.CloudProviderAzure {
+		for i := range nodes {
+			node := &nodes[i]
+			vmName, err := toAzureVMName(node.Spec.ProviderID)
+			if err != nil {
+				klog.Errorf("ignoring node %q with malformed provider ID: %s", node.Name, err)
+				continue
+			}
+			nodeMap[vmName] = node
+		}
+		return nodeMap
+	}
+
 	for i := range nodes {
 		node := &nodes[i]
-
 		providerIDs := strings.Split(node.Spec.ProviderID, "/")
 		instanceID := providerIDs[len(providerIDs)-1]
 		nodeMap[instanceID] = node
 	}
 
 	return nodeMap
+}
+
+// toAzureVMName returns a VM name from the resource path stored in the provider ID.
+func toAzureVMName(providerID string) (string, error) {
+	l := strings.Split(providerID, "/")
+	if len(l) != 13 {
+		return "", fmt.Errorf("unexpected form of resource path: %q", providerID)
+	}
+	vmssName := l[10]
+	idx := l[12]
+	return fmt.Sprintf("%s_%s", vmssName, idx), nil
 }

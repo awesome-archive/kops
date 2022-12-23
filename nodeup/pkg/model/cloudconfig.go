@@ -1,5 +1,5 @@
 /*
-Copyright 2016 The Kubernetes Authors.
+Copyright 2019 The Kubernetes Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -17,46 +17,84 @@ limitations under the License.
 package model
 
 import (
-	"bufio"
+	"encoding/json"
 	"fmt"
 	"os"
 	"strings"
 
 	"k8s.io/kops/pkg/apis/kops"
-	"k8s.io/kops/pkg/apis/kops/util"
-	"k8s.io/kops/pkg/try"
 	"k8s.io/kops/upup/pkg/fi"
 	"k8s.io/kops/upup/pkg/fi/nodeup/nodetasks"
 )
 
 const (
-	CloudConfigFilePath = "/etc/kubernetes/cloud.config"
-
-	// Required for vSphere CloudProvider
-	MinimumVersionForVMUUID = "1.5.3"
+	CloudConfigFilePath       = "/etc/kubernetes/cloud.config"
+	InTreeCloudConfigFilePath = "/etc/kubernetes/in-tree-cloud.config"
 
 	// VM UUID is set by cloud-init
 	VM_UUID_FILE_PATH = "/etc/vmware/vm_uuid"
 )
+
+// azureCloudConfig is the configuration passed to Cloud Provider Azure.
+// The specification is described in https://kubernetes-sigs.github.io/cloud-provider-azure/install/configs/.
+type azureCloudConfig struct {
+	// SubscriptionID is the ID of the Azure Subscription that the cluster is deployed in.
+	SubscriptionID string `json:"subscriptionId,omitempty"`
+	// TenantID is the ID of the tenant that the cluster is deployed in.
+	TenantID string `json:"tenantId"`
+	// CloudConfigType is the cloud configure type for Azure cloud provider. Supported values are file, secret and merge.
+	CloudConfigType string `json:"cloudConfigType,omitempty"`
+	// VMType is the type of azure nodes.
+	VMType string `json:"vmType,omitempty" yaml:"vmType,omitempty"`
+	// ResourceGroup is the name of the resource group that the cluster is deployed in.
+	ResourceGroup string `json:"resourceGroup,omitempty"`
+	// Location is the location of the resource group that the cluster is deployed in.
+	Location string `json:"location,omitempty"`
+	// RouteTableName is the name of the route table attached to the subnet that the cluster is deployed in.
+	RouteTableName string `json:"routeTableName,omitempty"`
+	// VnetName is the name of the virtual network that the cluster is deployed in.
+	VnetName string `json:"vnetName"`
+
+	// UseInstanceMetadata specifies where instance metadata service is used where possible.
+	UseInstanceMetadata bool `json:"useInstanceMetadata,omitempty"`
+	// UseManagedIdentityExtension specifies where managed service
+	// identity is used for the virtual machine to access Azure
+	// ARM APIs.
+	UseManagedIdentityExtension bool `json:"useManagedIdentityExtension,omitempty"`
+	// DisableAvailabilitySetNodes disables VMAS nodes support.
+	DisableAvailabilitySetNodes bool `json:"disableAvailabilitySetNodes,omitempty"`
+}
 
 // CloudConfigBuilder creates the cloud configuration file
 type CloudConfigBuilder struct {
 	*NodeupModelContext
 }
 
-var _ fi.ModelBuilder = &CloudConfigBuilder{}
+var _ fi.NodeupModelBuilder = &CloudConfigBuilder{}
 
-func (b *CloudConfigBuilder) Build(c *fi.ModelBuilderContext) error {
+func (b *CloudConfigBuilder) Build(c *fi.NodeupModelBuilderContext) error {
+	if err := b.build(c, true); err != nil {
+		return err
+	}
+	if err := b.build(c, false); err != nil {
+		return err
+	}
+	return nil
+}
+
+func (b *CloudConfigBuilder) build(c *fi.NodeupModelBuilderContext, inTree bool) error {
 	// Add cloud config file if needed
 	var lines []string
 
-	cloudProvider := b.Cluster.Spec.CloudProvider
+	cloudProvider := b.CloudProvider
 	cloudConfig := b.Cluster.Spec.CloudConfig
 
 	if cloudConfig == nil {
 		cloudConfig = &kops.CloudConfiguration{}
 	}
 
+	var config string
+	requireGlobal := true
 	switch cloudProvider {
 	case "gce":
 		if cloudConfig.NodeTags != nil {
@@ -75,43 +113,17 @@ func (b *CloudConfigBuilder) Build(c *fi.ModelBuilderContext) error {
 		if cloudConfig.ElbSecurityGroup != nil {
 			lines = append(lines, "ElbSecurityGroup = "+*cloudConfig.ElbSecurityGroup)
 		}
-	case "vsphere":
-		vm_uuid, err := getVMUUID(b.Cluster.Spec.KubernetesVersion)
-		if err != nil {
-			return err
+		if !inTree {
+			for _, family := range cloudConfig.NodeIPFamilies {
+				lines = append(lines, "NodeIPFamilies = "+family)
+			}
 		}
-		// Note: Segregate configuration for different sections as below
-		// Global Config for vSphere CloudProvider
-		if cloudConfig.VSphereUsername != nil {
-			lines = append(lines, "user = "+*cloudConfig.VSphereUsername)
-		}
-		if cloudConfig.VSpherePassword != nil {
-			lines = append(lines, "password = "+*cloudConfig.VSpherePassword)
-		}
-		if cloudConfig.VSphereServer != nil {
-			lines = append(lines, "server = "+*cloudConfig.VSphereServer)
-			lines = append(lines, "port = 443")
-			lines = append(lines, fmt.Sprintf("insecure-flag = %t", true))
-		}
-		if cloudConfig.VSphereDatacenter != nil {
-			lines = append(lines, "datacenter = "+*cloudConfig.VSphereDatacenter)
-		}
-		if cloudConfig.VSphereDatastore != nil {
-			lines = append(lines, "datastore = "+*cloudConfig.VSphereDatastore)
-		}
-		if vm_uuid != "" {
-			lines = append(lines, "vm-uuid = "+strings.Trim(vm_uuid, "\n"))
-		}
-		// Disk Config for vSphere CloudProvider
-		// We need this to support Kubernetes vSphere CloudProvider < v1.5.3
-		lines = append(lines, "[disk]")
-		lines = append(lines, "scsicontrollertype = pvscsi")
 	case "openstack":
-		osc := cloudConfig.Openstack
+		osc := b.Cluster.Spec.CloudProvider.Openstack
 		if osc == nil {
 			break
 		}
-		//Support mapping of older keystone API
+		// Support mapping of older keystone API
 		tenantName := os.Getenv("OS_TENANT_NAME")
 		if tenantName == "" {
 			tenantName = os.Getenv("OS_PROJECT_NAME")
@@ -129,81 +141,131 @@ func (b *CloudConfigBuilder) Build(c *fi.ModelBuilderContext) error {
 			fmt.Sprintf("tenant-name=\"%s\"", tenantName),
 			fmt.Sprintf("domain-name=\"%s\"", os.Getenv("OS_DOMAIN_NAME")),
 			fmt.Sprintf("domain-id=\"%s\"", os.Getenv("OS_DOMAIN_ID")),
+		)
+		if b.Cluster.Spec.ExternalCloudControllerManager != nil {
+			lines = append(lines,
+				fmt.Sprintf("application-credential-id=\"%s\"", os.Getenv("OS_APPLICATION_CREDENTIAL_ID")),
+				fmt.Sprintf("application-credential-secret=\"%s\"", os.Getenv("OS_APPLICATION_CREDENTIAL_SECRET")),
+			)
+		}
+
+		lines = append(lines,
 			"",
 		)
 
 		if lb := osc.Loadbalancer; lb != nil {
+			ingressHostnameSuffix := "nip.io"
+			if fi.ValueOf(lb.IngressHostnameSuffix) != "" {
+				ingressHostnameSuffix = fi.ValueOf(lb.IngressHostnameSuffix)
+			}
+
 			lines = append(lines,
 				"[LoadBalancer]",
-				fmt.Sprintf("floating-network-id=%s", fi.StringValue(lb.FloatingNetworkID)),
-				fmt.Sprintf("lb-method=%s", fi.StringValue(lb.Method)),
-				fmt.Sprintf("lb-provider=%s", fi.StringValue(lb.Provider)),
-				fmt.Sprintf("use-octavia=%t", fi.BoolValue(lb.UseOctavia)),
-				fmt.Sprintf("manage-security-groups=%t", fi.BoolValue(lb.ManageSecGroups)),
+				fmt.Sprintf("floating-network-id=%s", fi.ValueOf(lb.FloatingNetworkID)),
+				fmt.Sprintf("lb-method=%s", fi.ValueOf(lb.Method)),
+				fmt.Sprintf("lb-provider=%s", fi.ValueOf(lb.Provider)),
+				fmt.Sprintf("use-octavia=%t", fi.ValueOf(lb.UseOctavia)),
+				fmt.Sprintf("manage-security-groups=%t", fi.ValueOf(lb.ManageSecGroups)),
+				fmt.Sprintf("enable-ingress-hostname=%t", fi.ValueOf(lb.EnableIngressHostname)),
+				fmt.Sprintf("ingress-hostname-suffix=%s", ingressHostnameSuffix),
 				"",
 			)
 
 			if monitor := osc.Monitor; monitor != nil {
 				lines = append(lines,
 					"create-monitor=yes",
-					fmt.Sprintf("monitor-delay=%s", fi.StringValue(monitor.Delay)),
-					fmt.Sprintf("monitor-timeout=%s", fi.StringValue(monitor.Timeout)),
-					fmt.Sprintf("monitor-max-retries=%d", fi.IntValue(monitor.MaxRetries)),
+					fmt.Sprintf("monitor-delay=%s", fi.ValueOf(monitor.Delay)),
+					fmt.Sprintf("monitor-timeout=%s", fi.ValueOf(monitor.Timeout)),
+					fmt.Sprintf("monitor-max-retries=%d", fi.ValueOf(monitor.MaxRetries)),
 					"",
 				)
 			}
 		}
 
 		if bs := osc.BlockStorage; bs != nil {
-			//Block Storage Config
+			// Block Storage Config
 			lines = append(lines,
 				"[BlockStorage]",
-				fmt.Sprintf("bs-version=%s", fi.StringValue(bs.Version)),
-				fmt.Sprintf("ignore-volume-az=%t", fi.BoolValue(bs.IgnoreAZ)),
+				fmt.Sprintf("bs-version=%s", fi.ValueOf(bs.Version)),
+				fmt.Sprintf("ignore-volume-az=%t", fi.ValueOf(bs.IgnoreAZ)),
 				"")
 		}
+
+		if networking := osc.Network; networking != nil {
+			// Networking Config
+			// https://github.com/kubernetes/cloud-provider-openstack/blob/master/docs/openstack-cloud-controller-manager/using-openstack-cloud-controller-manager.md#networking
+			var networkingLines []string
+
+			if networking.IPv6SupportDisabled != nil {
+				networkingLines = append(networkingLines, fmt.Sprintf("ipv6-support-disabled=%t", fi.ValueOf(networking.IPv6SupportDisabled)))
+			}
+			for _, name := range networking.PublicNetworkNames {
+				networkingLines = append(networkingLines, fmt.Sprintf("public-network-name=%s", fi.ValueOf(name)))
+			}
+			for _, name := range networking.InternalNetworkNames {
+				networkingLines = append(networkingLines, fmt.Sprintf("internal-network-name=%s", fi.ValueOf(name)))
+			}
+
+			if len(networkingLines) > 0 {
+				lines = append(lines, "[Networking]")
+				lines = append(lines, networkingLines...)
+				lines = append(lines, "")
+			}
+		}
+	case "azure":
+		requireGlobal = false
+
+		var region string
+		for _, subnet := range b.Cluster.Spec.Networking.Subnets {
+			if subnet.Region != "" {
+				region = subnet.Region
+				break
+			}
+		}
+		if region == "" {
+			return fmt.Errorf("on Azure, subnets must include Regions")
+		}
+
+		vnetName := b.Cluster.Spec.Networking.NetworkID
+		if vnetName == "" {
+			vnetName = b.Cluster.Name
+		}
+
+		az := b.Cluster.Spec.CloudProvider.Azure
+		c := &azureCloudConfig{
+			CloudConfigType:             "file",
+			SubscriptionID:              az.SubscriptionID,
+			TenantID:                    az.TenantID,
+			Location:                    region,
+			VMType:                      "vmss",
+			ResourceGroup:               b.Cluster.AzureResourceGroupName(),
+			RouteTableName:              az.RouteTableName,
+			VnetName:                    vnetName,
+			UseInstanceMetadata:         true,
+			UseManagedIdentityExtension: true,
+			// Disable availability set nodes as we currently use VMSS.
+			DisableAvailabilitySetNodes: true,
+		}
+		data, err := json.Marshal(c)
+		if err != nil {
+			return fmt.Errorf("error marshalling azure config: %s", err)
+		}
+		config = string(data)
 	}
 
-	config := "[global]\n" + strings.Join(lines, "\n") + "\n"
-
+	if requireGlobal {
+		config = "[global]\n" + strings.Join(lines, "\n") + "\n"
+	}
+	path := CloudConfigFilePath
+	if inTree {
+		path = InTreeCloudConfigFilePath
+	}
 	t := &nodetasks.File{
-		Path:     CloudConfigFilePath,
+		Path:     path,
 		Contents: fi.NewStringResource(config),
 		Type:     nodetasks.FileType_File,
 	}
 	c.AddTask(t)
 
 	return nil
-}
-
-// We need this for vSphere CloudProvider
-// getVMUUID gets instance uuid of the VM from the file written by cloud-init
-func getVMUUID(kubernetesVersion string) (string, error) {
-
-	actualKubernetesVersion, err := util.ParseKubernetesVersion(kubernetesVersion)
-	if err != nil {
-		return "", err
-	}
-	minimumVersionForUUID, err := util.ParseKubernetesVersion(MinimumVersionForVMUUID)
-	if err != nil {
-		return "", err
-	}
-
-	// VM UUID is required only for Kubernetes version greater than 1.5.3
-	if actualKubernetesVersion.GTE(*minimumVersionForUUID) {
-		file, err := os.Open(VM_UUID_FILE_PATH)
-		if err != nil {
-			return "", err
-		}
-
-		defer try.CloseFile(file)
-
-		vm_uuid, err := bufio.NewReader(file).ReadString('\n')
-		if err != nil {
-			return "", err
-		}
-		return vm_uuid, err
-	}
-
-	return "", err
 }

@@ -24,12 +24,13 @@ import (
 
 func TestArchiveDependencies(t *testing.T) {
 	grid := []struct {
-		parent fi.Task
-		child  fi.Task
+		parent fi.NodeupTask
+		child  fi.NodeupTask
 	}{
 		{
-			parent: &MountDiskTask{
-				Mountpoint: "/",
+			parent: &File{
+				Path: "/var",
+				Type: FileType_Directory,
 			},
 			child: &Archive{
 				TargetDir: "/var/something",
@@ -39,23 +40,24 @@ func TestArchiveDependencies(t *testing.T) {
 			parent: &Archive{
 				TargetDir: "/var/something",
 			},
-			child: &MountDiskTask{
-				Mountpoint: "/var/something/subdir",
+			child: &File{
+				Path: "/var/something/subdir",
+				Type: FileType_Directory,
 			},
 		},
 	}
 
 	for _, g := range grid {
-		allTasks := make(map[string]fi.Task)
+		allTasks := make(map[string]fi.NodeupTask)
 		allTasks["parent"] = g.parent
 		allTasks["child"] = g.child
 
-		deps := g.parent.(fi.HasDependencies).GetDependencies(allTasks)
+		deps := g.parent.(fi.NodeupHasDependencies).GetDependencies(allTasks)
 		if len(deps) != 0 {
 			t.Errorf("found unexpected dependencies for parent: %v %v", g.parent, deps)
 		}
 
-		childDeps := g.child.(fi.HasDependencies).GetDependencies(allTasks)
+		childDeps := g.child.(fi.NodeupHasDependencies).GetDependencies(allTasks)
 		if len(childDeps) != 1 {
 			t.Errorf("found unexpected dependencies for child: %v %v", g.child, childDeps)
 		}

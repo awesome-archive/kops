@@ -1,5 +1,5 @@
 /*
-Copyright 2016 The Kubernetes Authors.
+Copyright 2019 The Kubernetes Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -16,24 +16,14 @@ limitations under the License.
 
 package kops
 
-import "strings"
-
 // Version can be replaced by build tooling
 var Version = KOPS_RELEASE_VERSION
 
 // These constants are parsed by build tooling - be careful about changing the formats
 const (
-	KOPS_RELEASE_VERSION = "1.14.0-alpha.1"
-	KOPS_CI_VERSION      = "1.14.0-alpha.2"
+	KOPS_RELEASE_VERSION = "1.26.0-alpha.2"
+	KOPS_CI_VERSION      = "1.26.0-alpha.3"
 )
 
 // GitVersion should be replaced by the makefile
 var GitVersion = ""
-
-// DefaultProtokubeImageName is the name of the protokube image, as we would pass to "docker run"
-func DefaultProtokubeImageName() string {
-	// + is valid in semver, but not in docker tags.
-	// Note that this mirrors the logic in the makefile for PROTOKUBE_TAG.
-	dockerTag := strings.Replace(Version, "+", "-", -1)
-	return "protokube:" + dockerTag
-}

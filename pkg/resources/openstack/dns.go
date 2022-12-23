@@ -1,5 +1,5 @@
 /*
-Copyright 2018 The Kubernetes Authors.
+Copyright 2019 The Kubernetes Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -19,6 +19,8 @@ package openstack
 import (
 	"fmt"
 
+	"k8s.io/kops/pkg/dns"
+
 	"github.com/gophercloud/gophercloud/openstack/dns/v2/recordsets"
 	"github.com/gophercloud/gophercloud/openstack/dns/v2/zones"
 	"k8s.io/kops/pkg/resources"
@@ -31,13 +33,13 @@ const (
 )
 
 func (os *clusterDiscoveryOS) ListDNSRecordsets() ([]*resources.Resource, error) {
-	zopts := zones.ListOpts{
-		Name: os.clusterName,
+	// if dnsclient does not exist (designate disabled) or using gossip DNS
+	if os.osCloud.DNSClient() == nil || dns.IsGossipClusterName(os.clusterName) {
+		return nil, nil
 	}
 
-	// if dnsclient does not exist (designate disabled)
-	if os.osCloud.DNSClient() == nil {
-		return nil, nil
+	zopts := zones.ListOpts{
+		Name: os.clusterName,
 	}
 
 	zs, err := os.osCloud.ListDNSZones(zopts)
@@ -45,10 +47,8 @@ func (os *clusterDiscoveryOS) ListDNSRecordsets() ([]*resources.Resource, error)
 		return nil, fmt.Errorf("failed to list dns zones: %s", err)
 	}
 
-	switch len(zs) {
-	case 0:
-	case 1:
-	default:
+	if len(zs) == 0 {
+		return nil, fmt.Errorf("dns zone not found: %s", os.clusterName)
 	}
 
 	z := zs[0]

@@ -1,0 +1,43 @@
+name: 'Update Dependencies'
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: '0 6 * * 5'
+
+env:
+  GOPROXY: https://proxy.golang.org
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  update-deps:
+    if: ${{ github.repository == 'kubernetes/kops' }}
+    runs-on: ubuntu-20.04
+    steps:
+      - uses: actions/setup-go@6edd4406fa81c3da01a34fa6f6343087c207a568
+        with:
+          go-version: '1.19.4'
+      - uses: actions/checkout@755da8c3cf115ac066823e79a1e1788f8940201b
+      - name: Update Dependencies
+        id: update_deps
+        run: |
+          make depup
+          echo "::set-output name=changes::$(git status --porcelain)"
+      - name: Create PR
+        if: ${{ steps.update_deps.outputs.changes != '' }}
+        uses: peter-evans/create-pull-request@2b011faafdcbc9ceb11414d64d0573f37c774b04
+        with:
+          title: 'Update dependencies'
+          commit-message: Update dependencies
+          committer: github-actions <actions@github.com>
+          author: github-actions <actions@github.com>
+          branch: dependencies/update
+          branch-suffix: timestamp
+          base: master
+          delete-branch: true
+          labels: ok-to-test
+          body: |
+            Updating go.mod with latest dependencies...

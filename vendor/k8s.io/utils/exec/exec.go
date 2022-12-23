@@ -19,6 +19,7 @@ package exec
 import (
 	"context"
 	"io"
+	"io/fs"
 	osexec "os/exec"
 	"syscall"
 	"time"
@@ -60,6 +61,17 @@ type Cmd interface {
 	SetStdin(in io.Reader)
 	SetStdout(out io.Writer)
 	SetStderr(out io.Writer)
+	SetEnv(env []string)
+
+	// StdoutPipe and StderrPipe for getting the process' Stdout and Stderr as
+	// Readers
+	StdoutPipe() (io.ReadCloser, error)
+	StderrPipe() (io.ReadCloser, error)
+
+	// Start and Wait are for running a process non-blocking
+	Start() error
+	Wait() error
+
 	// Stops the command by sending SIGTERM. It is not guaranteed the
 	// process will stop before this function returns. If the process is not
 	// responding, an internal timer function will send a SIGKILL to force
@@ -87,17 +99,18 @@ func New() Interface {
 
 // Command is part of the Interface interface.
 func (executor *executor) Command(cmd string, args ...string) Cmd {
-	return (*cmdWrapper)(osexec.Command(cmd, args...))
+	return (*cmdWrapper)(maskErrDotCmd(osexec.Command(cmd, args...)))
 }
 
 // CommandContext is part of the Interface interface.
 func (executor *executor) CommandContext(ctx context.Context, cmd string, args ...string) Cmd {
-	return (*cmdWrapper)(osexec.CommandContext(ctx, cmd, args...))
+	return (*cmdWrapper)(maskErrDotCmd(osexec.CommandContext(ctx, cmd, args...)))
 }
 
 // LookPath is part of the Interface interface
 func (executor *executor) LookPath(file string) (string, error) {
-	return osexec.LookPath(file)
+	path, err := osexec.LookPath(file)
+	return path, handleError(maskErrDot(err))
 }
 
 // Wraps exec.Cmd so we can capture errors.
@@ -119,6 +132,30 @@ func (cmd *cmdWrapper) SetStdout(out io.Writer) {
 
 func (cmd *cmdWrapper) SetStderr(out io.Writer) {
 	cmd.Stderr = out
+}
+
+func (cmd *cmdWrapper) SetEnv(env []string) {
+	cmd.Env = env
+}
+
+func (cmd *cmdWrapper) StdoutPipe() (io.ReadCloser, error) {
+	r, err := (*osexec.Cmd)(cmd).StdoutPipe()
+	return r, handleError(err)
+}
+
+func (cmd *cmdWrapper) StderrPipe() (io.ReadCloser, error) {
+	r, err := (*osexec.Cmd)(cmd).StderrPipe()
+	return r, handleError(err)
+}
+
+func (cmd *cmdWrapper) Start() error {
+	err := (*osexec.Cmd)(cmd).Start()
+	return handleError(err)
+}
+
+func (cmd *cmdWrapper) Wait() error {
+	err := (*osexec.Cmd)(cmd).Wait()
+	return handleError(err)
 }
 
 // Run is part of the Cmd interface.
@@ -163,6 +200,8 @@ func handleError(err error) error {
 	switch e := err.(type) {
 	case *osexec.ExitError:
 		return &ExitErrorWrapper{e}
+	case *fs.PathError:
+		return ErrExecutableNotFound
 	case *osexec.Error:
 		if e.Err == osexec.ErrNotFound {
 			return ErrExecutableNotFound
@@ -206,10 +245,12 @@ func (e CodeExitError) String() string {
 	return e.Err.Error()
 }
 
+// Exited is to check if the process has finished
 func (e CodeExitError) Exited() bool {
 	return true
 }
 
+// ExitStatus is for checking the error code
 func (e CodeExitError) ExitStatus() int {
 	return e.Code
 }

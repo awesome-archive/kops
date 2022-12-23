@@ -1,5 +1,5 @@
 /*
-Copyright 2016 The Kubernetes Authors.
+Copyright 2019 The Kubernetes Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -24,7 +24,7 @@ type GCEAPITarget struct {
 	Cloud GCECloud
 }
 
-var _ fi.Target = &GCEAPITarget{}
+var _ fi.CloudupTarget = &GCEAPITarget{}
 
 func NewGCEAPITarget(cloud GCECloud) *GCEAPITarget {
 	return &GCEAPITarget{
@@ -32,10 +32,14 @@ func NewGCEAPITarget(cloud GCECloud) *GCEAPITarget {
 	}
 }
 
-func (t *GCEAPITarget) Finish(taskMap map[string]fi.Task) error {
+func (t *GCEAPITarget) Finish(taskMap map[string]fi.CloudupTask) error {
 	return nil
 }
 
 func (t *GCEAPITarget) ProcessDeletions() bool {
+	return true
+}
+
+func (t *GCEAPITarget) DefaultCheckExisting() bool {
 	return true
 }

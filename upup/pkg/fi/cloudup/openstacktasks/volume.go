@@ -19,13 +19,13 @@ package openstacktasks
 import (
 	"fmt"
 
-	cinderv2 "github.com/gophercloud/gophercloud/openstack/blockstorage/v2/volumes"
-	"k8s.io/klog"
+	cinderv3 "github.com/gophercloud/gophercloud/openstack/blockstorage/v3/volumes"
+	"k8s.io/klog/v2"
 	"k8s.io/kops/upup/pkg/fi"
 	"k8s.io/kops/upup/pkg/fi/cloudup/openstack"
 )
 
-//go:generate fitask -type=Volume
+// +kops:fitask
 type Volume struct {
 	ID               *string
 	Name             *string
@@ -33,19 +33,20 @@ type Volume struct {
 	VolumeType       *string
 	SizeGB           *int64
 	Tags             map[string]string
-	Lifecycle        *fi.Lifecycle
+	Lifecycle        fi.Lifecycle
 }
 
 var _ fi.CompareWithID = &Volume{}
+var _ fi.CloudupTaskNormalize = &Volume{}
 
 func (c *Volume) CompareWithID() *string {
 	return c.ID
 }
 
-func (c *Volume) Find(context *fi.Context) (*Volume, error) {
-	cloud := context.Cloud.(openstack.OpenstackCloud)
-	opt := cinderv2.ListOpts{
-		Name:     fi.StringValue(c.Name),
+func (c *Volume) Find(context *fi.CloudupContext) (*Volume, error) {
+	cloud := context.T.Cloud.(openstack.OpenstackCloud)
+	opt := cinderv3.ListOpts{
+		Name:     fi.ValueOf(c.Name),
 		Metadata: c.Tags,
 	}
 	volumes, err := cloud.ListVolumes(opt)
@@ -56,38 +57,37 @@ func (c *Volume) Find(context *fi.Context) (*Volume, error) {
 	if n == 0 {
 		return nil, nil
 	} else if n != 1 {
-		return nil, fmt.Errorf("found multiple Volumes with name: %s", fi.StringValue(c.Name))
+		return nil, fmt.Errorf("found multiple Volumes with name: %s", fi.ValueOf(c.Name))
 	}
 	v := volumes[0]
 	actual := &Volume{
-		ID:               fi.String(v.ID),
-		Name:             fi.String(v.Name),
-		AvailabilityZone: fi.String(v.AvailabilityZone),
-		VolumeType:       fi.String(v.VolumeType),
-		SizeGB:           fi.Int64(int64(v.Size)),
+		ID:               fi.PtrTo(v.ID),
+		Name:             fi.PtrTo(v.Name),
+		AvailabilityZone: fi.PtrTo(v.AvailabilityZone),
+		VolumeType:       fi.PtrTo(v.VolumeType),
+		SizeGB:           fi.PtrTo(int64(v.Size)),
 		Tags:             v.Metadata,
 		Lifecycle:        c.Lifecycle,
 	}
 	// remove tags "readonly" and "attached_mode", openstack are adding these and if not removed
 	// kops will always try to update volumes
-	if _, ok := actual.Tags["readonly"]; ok {
-		delete(actual.Tags, "readonly")
-	}
-	if _, ok := actual.Tags["attached_mode"]; ok {
-		delete(actual.Tags, "attached_mode")
-	}
+	delete(actual.Tags, "readonly")
+	delete(actual.Tags, "attached_mode")
 	c.ID = actual.ID
 	c.AvailabilityZone = actual.AvailabilityZone
 	return actual, nil
 }
 
-func (c *Volume) Run(context *fi.Context) error {
-	cloud := context.Cloud.(openstack.OpenstackCloud)
+func (c *Volume) Normalize(context *fi.CloudupContext) error {
+	cloud := context.T.Cloud.(openstack.OpenstackCloud)
 	for k, v := range cloud.GetCloudTags() {
 		c.Tags[k] = v
 	}
+	return nil
+}
 
-	return fi.DefaultDeltaRunMethod(c, context)
+func (c *Volume) Run(context *fi.CloudupContext) error {
+	return fi.CloudupDefaultDeltaRunMethod(c, context)
 }
 
 func (_ *Volume) CheckChanges(a, e, changes *Volume) error {
@@ -123,19 +123,19 @@ func (_ *Volume) CheckChanges(a, e, changes *Volume) error {
 
 func (_ *Volume) RenderOpenstack(t *openstack.OpenstackAPITarget, a, e, changes *Volume) error {
 	if a == nil {
-		klog.V(2).Infof("Creating PersistentVolume with Name:%q", fi.StringValue(e.Name))
+		klog.V(2).Infof("Creating PersistentVolume with Name:%q", fi.ValueOf(e.Name))
 
-		storageAZ, err := t.Cloud.GetStorageAZFromCompute(fi.StringValue(e.AvailabilityZone))
+		storageAZ, err := t.Cloud.GetStorageAZFromCompute(fi.ValueOf(e.AvailabilityZone))
 		if err != nil {
 			return fmt.Errorf("Failed to get storage availability zone: %s", err)
 		}
 
-		opt := cinderv2.CreateOpts{
+		opt := cinderv3.CreateOpts{
 			Size:             int(*e.SizeGB),
 			AvailabilityZone: storageAZ.ZoneName,
 			Metadata:         e.Tags,
-			Name:             fi.StringValue(e.Name),
-			VolumeType:       fi.StringValue(e.VolumeType),
+			Name:             fi.ValueOf(e.Name),
+			VolumeType:       fi.ValueOf(e.VolumeType),
 		}
 
 		v, err := t.Cloud.CreateVolume(opt)
@@ -143,17 +143,17 @@ func (_ *Volume) RenderOpenstack(t *openstack.OpenstackAPITarget, a, e, changes 
 			return fmt.Errorf("error creating PersistentVolume: %v", err)
 		}
 
-		e.ID = fi.String(v.ID)
-		e.AvailabilityZone = fi.String(v.AvailabilityZone)
+		e.ID = fi.PtrTo(v.ID)
+		e.AvailabilityZone = fi.PtrTo(v.AvailabilityZone)
 		return nil
 	}
 
 	if changes != nil && changes.Tags != nil {
-		klog.V(2).Infof("Update the tags on volume %q: %v, the differences are %v", fi.StringValue(e.ID), e.Tags, changes.Tags)
+		klog.V(2).Infof("Update the tags on volume %q: %v, the differences are %v", fi.ValueOf(e.ID), e.Tags, changes.Tags)
 
-		err := t.Cloud.SetVolumeTags(fi.StringValue(e.ID), e.Tags)
+		err := t.Cloud.SetVolumeTags(fi.ValueOf(e.ID), e.Tags)
 		if err != nil {
-			return fmt.Errorf("error updating the tags on volume %q: %v", fi.StringValue(e.ID), err)
+			return fmt.Errorf("error updating the tags on volume %q: %v", fi.ValueOf(e.ID), err)
 		}
 	}
 

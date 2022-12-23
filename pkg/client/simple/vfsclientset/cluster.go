@@ -1,5 +1,5 @@
 /*
-Copyright 2016 The Kubernetes Authors.
+Copyright 2019 The Kubernetes Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -17,21 +17,22 @@ limitations under the License.
 package vfsclientset
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"strings"
 	"time"
 
+	apiequality "k8s.io/apimachinery/pkg/api/equality"
 	"k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/apimachinery/pkg/util/validation/field"
 	"k8s.io/apimachinery/pkg/watch"
-	"k8s.io/klog"
+	"k8s.io/klog/v2"
 	api "k8s.io/kops/pkg/apis/kops"
 	"k8s.io/kops/pkg/apis/kops/registry"
-	"k8s.io/kops/pkg/apis/kops/v1alpha1"
 	"k8s.io/kops/pkg/apis/kops/validation"
 	"k8s.io/kops/util/pkg/vfs"
 )
@@ -43,8 +44,6 @@ type ClusterVFS struct {
 func newClusterVFS(basePath vfs.Path) *ClusterVFS {
 	c := &ClusterVFS{}
 	c.init("Cluster", basePath, StoreVersion)
-	defaultReadVersion := v1alpha1.SchemeGroupVersion.WithKind("Cluster")
-	c.defaultReadVersion = &defaultReadVersion
 	return c
 }
 
@@ -98,8 +97,10 @@ func (c *ClusterVFS) List(options metav1.ListOptions) (*api.ClusterList, error) 
 }
 
 func (r *ClusterVFS) Create(c *api.Cluster) (*api.Cluster, error) {
-	if err := validation.ValidateCluster(c, false); err != nil {
-		return nil, err
+	ctx := context.TODO()
+
+	if errs := validation.ValidateCluster(c, false); len(errs) != 0 {
+		return nil, errs.ToAggregate()
 	}
 
 	if c.ObjectMeta.CreationTimestamp.IsZero() {
@@ -111,7 +112,7 @@ func (r *ClusterVFS) Create(c *api.Cluster) (*api.Cluster, error) {
 		return nil, fmt.Errorf("clusterName is required")
 	}
 
-	if err := r.writeConfig(c, r.basePath.Join(clusterName, registry.PathCluster), c, vfs.WriteOptionCreate); err != nil {
+	if err := r.writeConfig(ctx, c, r.basePath.Join(clusterName, registry.PathCluster), c, vfs.WriteOptionCreate); err != nil {
 		if os.IsExist(err) {
 			return nil, err
 		}
@@ -122,9 +123,11 @@ func (r *ClusterVFS) Create(c *api.Cluster) (*api.Cluster, error) {
 }
 
 func (r *ClusterVFS) Update(c *api.Cluster, status *api.ClusterStatus) (*api.Cluster, error) {
+	ctx := context.TODO()
+
 	clusterName := c.ObjectMeta.Name
 	if clusterName == "" {
-		return nil, field.Required(field.NewPath("Name"), "clusterName is required")
+		return nil, field.Required(field.NewPath("objectMeta", "name"), "clusterName is required")
 	}
 
 	old, err := r.Get(clusterName, metav1.GetOptions{})
@@ -140,7 +143,11 @@ func (r *ClusterVFS) Update(c *api.Cluster, status *api.ClusterStatus) (*api.Clu
 		return nil, err
 	}
 
-	if err := r.writeConfig(c, r.basePath.Join(clusterName, registry.PathCluster), c, vfs.WriteOptionOnlyIfExists); err != nil {
+	if !apiequality.Semantic.DeepEqual(old.Spec, c.Spec) {
+		c.SetGeneration(old.GetGeneration() + 1)
+	}
+
+	if err := r.writeConfig(ctx, c, r.basePath.Join(clusterName, registry.PathCluster), c, vfs.WriteOptionOnlyIfExists); err != nil {
 		if os.IsNotExist(err) {
 			return nil, err
 		}
@@ -193,7 +200,7 @@ func (r *ClusterVFS) find(clusterName string) (*api.Cluster, error) {
 		c.ObjectMeta.Name = clusterName
 	}
 	if c.ObjectMeta.Name != clusterName {
-		klog.Warningf("Name of cluster does not match: %q vs %q", c.ObjectMeta.Name, clusterName)
+		klog.Warningf("Name of cluster does not match: actual name was %q, but cluster name was %q (using registry path %v).", c.ObjectMeta.Name, clusterName, registry.PathCluster)
 	}
 
 	// TODO: Split this out into real version updates / schema changes

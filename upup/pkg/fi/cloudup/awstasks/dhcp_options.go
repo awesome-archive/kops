@@ -1,5 +1,5 @@
 /*
-Copyright 2016 The Kubernetes Authors.
+Copyright 2019 The Kubernetes Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -18,22 +18,21 @@ package awstasks
 
 import (
 	"fmt"
-
 	"strings"
 
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/ec2"
-	"k8s.io/klog"
+	"k8s.io/klog/v2"
 	"k8s.io/kops/upup/pkg/fi"
 	"k8s.io/kops/upup/pkg/fi/cloudup/awsup"
-	"k8s.io/kops/upup/pkg/fi/cloudup/cloudformation"
 	"k8s.io/kops/upup/pkg/fi/cloudup/terraform"
+	"k8s.io/kops/upup/pkg/fi/cloudup/terraformWriter"
 )
 
-//go:generate fitask -type=DHCPOptions
+// +kops:fitask
 type DHCPOptions struct {
 	Name      *string
-	Lifecycle *fi.Lifecycle
+	Lifecycle fi.Lifecycle
 
 	ID                *string
 	DomainName        *string
@@ -52,8 +51,8 @@ func (e *DHCPOptions) CompareWithID() *string {
 	return e.ID
 }
 
-func (e *DHCPOptions) Find(c *fi.Context) (*DHCPOptions, error) {
-	cloud := c.Cloud.(awsup.AWSCloud)
+func (e *DHCPOptions) Find(c *fi.CloudupContext) (*DHCPOptions, error) {
+	cloud := c.T.Cloud.(awsup.AWSCloud)
 
 	request := &ec2.DescribeDhcpOptionsInput{}
 	if e.ID != nil {
@@ -110,8 +109,8 @@ func (e *DHCPOptions) Find(c *fi.Context) (*DHCPOptions, error) {
 	return actual, nil
 }
 
-func (e *DHCPOptions) Run(c *fi.Context) error {
-	return fi.DefaultDeltaRunMethod(e, c)
+func (e *DHCPOptions) Run(c *fi.CloudupContext) error {
+	return fi.CloudupDefaultDeltaRunMethod(e, c)
 }
 
 func (s *DHCPOptions) CheckChanges(a, e, changes *DHCPOptions) error {
@@ -141,7 +140,9 @@ func (_ *DHCPOptions) RenderAWS(t *awsup.AWSAPITarget, a, e, changes *DHCPOption
 	if a == nil {
 		klog.V(2).Infof("Creating DHCPOptions with Name:%q", *e.Name)
 
-		request := &ec2.CreateDhcpOptionsInput{}
+		request := &ec2.CreateDhcpOptionsInput{
+			TagSpecifications: awsup.EC2TagSpecification(ec2.ResourceTypeDhcpOptions, e.Tags),
+		}
 		if e.DomainNameServers != nil {
 			o := &ec2.NewDhcpConfiguration{
 				Key:    aws.String("domain-name-servers"),
@@ -169,9 +170,9 @@ func (_ *DHCPOptions) RenderAWS(t *awsup.AWSAPITarget, a, e, changes *DHCPOption
 }
 
 type terraformDHCPOptions struct {
-	DomainName        *string           `json:"domain_name,omitempty"`
-	DomainNameServers []string          `json:"domain_name_servers,omitempty"`
-	Tags              map[string]string `json:"tags,omitempty"`
+	DomainName        *string           `cty:"domain_name"`
+	DomainNameServers []string          `cty:"domain_name_servers"`
+	Tags              map[string]string `cty:"tags"`
 }
 
 func (_ *DHCPOptions) RenderTerraform(t *terraform.TerraformTarget, a, e, changes *DHCPOptions) error {
@@ -187,29 +188,6 @@ func (_ *DHCPOptions) RenderTerraform(t *terraform.TerraformTarget, a, e, change
 	return t.RenderResource("aws_vpc_dhcp_options", *e.Name, tf)
 }
 
-func (e *DHCPOptions) TerraformLink() *terraform.Literal {
-	return terraform.LiteralProperty("aws_vpc_dhcp_options", *e.Name, "id")
-}
-
-type cloudformationDHCPOptions struct {
-	DomainName        *string             `json:"DomainName,omitempty"`
-	DomainNameServers []string            `json:"DomainNameServers,omitempty"`
-	Tags              []cloudformationTag `json:"Tags,omitempty"`
-}
-
-func (_ *DHCPOptions) RenderCloudformation(t *cloudformation.CloudformationTarget, a, e, changes *DHCPOptions) error {
-	cf := &cloudformationDHCPOptions{
-		DomainName: e.DomainName,
-		Tags:       buildCloudformationTags(e.Tags),
-	}
-
-	if e.DomainNameServers != nil {
-		cf.DomainNameServers = strings.Split(*e.DomainNameServers, ",")
-	}
-
-	return t.RenderResource("AWS::EC2::DHCPOptions", *e.Name, cf)
-}
-
-func (e *DHCPOptions) CloudformationLink() *cloudformation.Literal {
-	return cloudformation.Ref("AWS::EC2::DHCPOptions", *e.Name)
+func (e *DHCPOptions) TerraformLink() *terraformWriter.Literal {
+	return terraformWriter.LiteralProperty("aws_vpc_dhcp_options", *e.Name, "id")
 }

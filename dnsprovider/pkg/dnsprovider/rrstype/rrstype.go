@@ -1,5 +1,5 @@
 /*
-Copyright 2016 The Kubernetes Authors.
+Copyright 2019 The Kubernetes Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -24,5 +24,6 @@ const (
 	A     = RrsType("A")
 	AAAA  = RrsType("AAAA")
 	CNAME = RrsType("CNAME")
+	TXT   = RrsType("TXT")
 	// TODO:  Add other types as required
 )

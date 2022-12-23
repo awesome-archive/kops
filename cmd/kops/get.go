@@ -1,5 +1,5 @@
 /*
-Copyright 2016 The Kubernetes Authors.
+Copyright 2019 The Kubernetes Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -17,50 +17,22 @@ limitations under the License.
 package main
 
 import (
+	"context"
 	"fmt"
 	"io"
 
-	"os"
-
 	"github.com/spf13/cobra"
-	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/klog/v2"
 	"k8s.io/kops/cmd/kops/util"
-	api "k8s.io/kops/pkg/apis/kops"
+	"k8s.io/kops/pkg/commands/commandutils"
 	"k8s.io/kops/pkg/kopscodecs"
-	"k8s.io/kubernetes/pkg/kubectl/util/i18n"
-	"k8s.io/kubernetes/pkg/kubectl/util/templates"
-)
-
-var (
-	getLong = templates.LongDesc(i18n.T(`
-	Display one or many resources.` + validResources))
-
-	getExample = templates.Examples(i18n.T(`
-	# Get all clusters in a state store
-	kops get clusters
-
-	# Get a cluster and its instancegroups
-	kops get k8s-cluster.example.com
-
-	# Get a cluster and its instancegroups' YAML desired configuration
-	kops get k8s-cluster.example.com -o yaml
-
-	# Save a cluster and its instancegroups' desired configuration to YAML file
-	kops get k8s-cluster.example.com -o yaml > cluster-desired-config.yaml
-
-	# Get a secret
-	kops get secrets kube -oplaintext
-
-	# Get the admin password for a cluster
-	kops get secrets admin -oplaintext`))
-
-	getShort = i18n.T(`Get one or many resources.`)
+	"k8s.io/kubectl/pkg/util/i18n"
 )
 
 type GetOptions struct {
-	output      string
-	clusterName string
+	ClusterName string
+	Output      string
 }
 
 const (
@@ -71,114 +43,40 @@ const (
 
 func NewCmdGet(f *util.Factory, out io.Writer) *cobra.Command {
 	options := &GetOptions{
-		output: OutputTable,
+		Output: OutputTable,
 	}
 
 	cmd := &cobra.Command{
 		Use:        "get",
 		SuggestFor: []string{"list"},
-		Short:      getShort,
-		Long:       getLong,
-		Example:    getExample,
-		Run: func(cmd *cobra.Command, args []string) {
-			if len(args) != 0 {
-				options.clusterName = args[0]
-			}
-
-			if rootCommand.clusterName != "" {
-				if len(args) != 0 {
-					exitWithError(fmt.Errorf("cannot mix --name for cluster with positional arguments"))
-				}
-
-				options.clusterName = rootCommand.clusterName
-			}
-
-			err := RunGet(&rootCommand, os.Stdout, options)
-			if err != nil {
-				exitWithError(err)
-			}
+		Short:      i18n.T(`Get one or many resources.`),
+		Args:       rootCommand.clusterNameArgs(&options.ClusterName),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			return RunGet(cmd.Context(), f, out, options)
 		},
 	}
 
-	cmd.PersistentFlags().StringVarP(&options.output, "output", "o", options.output, "output format.  One of: table, yaml, json")
+	cmd.PersistentFlags().StringVarP(&options.Output, "output", "o", options.Output, "output format. One of: table, yaml, json")
+	cmd.RegisterFlagCompletionFunc("output", func(cmd *cobra.Command, args []string, toComplete string) ([]string, cobra.ShellCompDirective) {
+		return []string{OutputTable, OutputJSON, OutputYaml}, cobra.ShellCompDirectiveNoFileComp
+	})
 
 	// create subcommands
+	cmd.AddCommand(NewCmdGetAll(f, out, options))
+	cmd.AddCommand(NewCmdGetAssets(f, out, options))
 	cmd.AddCommand(NewCmdGetCluster(f, out, options))
 	cmd.AddCommand(NewCmdGetInstanceGroups(f, out, options))
+	cmd.AddCommand(NewCmdGetInstances(f, out, options))
+	cmd.AddCommand(NewCmdGetKeypairs(f, out, options))
 	cmd.AddCommand(NewCmdGetSecrets(f, out, options))
+	cmd.AddCommand(NewCmdGetSSHPublicKeys(f, out, options))
 
 	return cmd
 }
 
-func RunGet(context Factory, out io.Writer, options *GetOptions) error {
-
-	client, err := context.Clientset()
-	if err != nil {
-		return err
-	}
-
-	cluster, err := client.GetCluster(options.clusterName)
-	if err != nil {
-		return err
-	}
-
-	if cluster == nil {
-		return fmt.Errorf("No cluster found")
-	}
-
-	igList, err := client.InstanceGroupsFor(cluster).List(metav1.ListOptions{})
-	if err != nil {
-		return err
-	}
-
-	if igList == nil || igList.Items == nil || len(igList.Items) == 0 {
-		fmt.Fprintf(os.Stderr, "No instance groups found\n")
-	}
-
-	var instancegroups []*api.InstanceGroup
-	for i := range igList.Items {
-		instancegroups = append(instancegroups, &igList.Items[i])
-	}
-
-	var obj []runtime.Object
-	if options.output != OutputTable {
-		obj = append(obj, cluster)
-		for _, group := range instancegroups {
-			obj = append(obj, group)
-		}
-	}
-
-	switch options.output {
-	case OutputYaml:
-		if err := fullOutputYAML(out, obj...); err != nil {
-			return fmt.Errorf("error writing cluster yaml to stdout: %v", err)
-		}
-
-		return nil
-
-	case OutputJSON:
-		if err := fullOutputJSON(out, obj...); err != nil {
-			return fmt.Errorf("error writing cluster json to stdout: %v", err)
-		}
-		return nil
-
-	case OutputTable:
-		fmt.Fprintf(os.Stdout, "Cluster\n")
-		err = clusterOutputTable([]*api.Cluster{cluster}, out)
-		if err != nil {
-			return err
-		}
-		fmt.Fprintf(os.Stdout, "\nInstance Groups\n")
-		err = igOutputTable(cluster, instancegroups, out)
-		if err != nil {
-			return err
-		}
-
-	default:
-		return fmt.Errorf("Unknown output format: %q", options.output)
-	}
-
-	return nil
+func RunGet(ctx context.Context, f commandutils.Factory, out io.Writer, options *GetOptions) error {
+	klog.Warning("`kops get [CLUSTER]` is deprecated: use `kops get all [CLUSTER]`")
+	return RunGetAll(ctx, f, out, &GetAllOptions{options})
 }
 
 func writeYAMLSep(out io.Writer) error {

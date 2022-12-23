@@ -19,7 +19,8 @@ package edit
 import (
 	"bytes"
 
-	"k8s.io/apimachinery/pkg/runtime"
+	"sigs.k8s.io/yaml"
+
 	"k8s.io/kops/pkg/diff"
 	"k8s.io/kops/pkg/kopscodecs"
 	"k8s.io/kops/upup/pkg/fi/utils"
@@ -29,16 +30,22 @@ import (
 // (for example due to a typo in the field name)
 // If there are extra fields it returns a string with a description of the diffs
 // If there are no extra fields it returns an empty string
-func HasExtraFields(yaml string, object runtime.Object) (string, error) {
-	// Convert the cluster back to YAML for comparison purposes
-	newYaml, err := kopscodecs.ToVersionedYaml(object)
+func HasExtraFields(yamlString string) (string, error) {
+	decoder := kopscodecs.Codecs.UniversalDeserializer()
+
+	object, _, err := decoder.Decode([]byte(yamlString), nil, nil)
+	if err != nil {
+		return "", err
+	}
+
+	newYaml, err := utils.YamlMarshal(object)
 	if err != nil {
 		return "", err
 	}
 
 	// Marshal the edited YAML to a map; this will prevent bad diffs due to sorting
 	var editedYamlObj map[string]interface{}
-	err = utils.YamlUnmarshal([]byte(yaml), &editedYamlObj)
+	err = yaml.UnmarshalStrict([]byte(yamlString), &editedYamlObj)
 	if err != nil {
 		return "", err
 	}

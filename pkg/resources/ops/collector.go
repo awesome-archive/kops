@@ -21,34 +21,49 @@ import (
 
 	"k8s.io/kops/pkg/apis/kops"
 	"k8s.io/kops/pkg/resources"
-	"k8s.io/kops/pkg/resources/ali"
 	"k8s.io/kops/pkg/resources/aws"
+	"k8s.io/kops/pkg/resources/azure"
 	"k8s.io/kops/pkg/resources/digitalocean"
 	"k8s.io/kops/pkg/resources/gce"
+	"k8s.io/kops/pkg/resources/hetzner"
 	"k8s.io/kops/pkg/resources/openstack"
+	"k8s.io/kops/pkg/resources/scaleway"
 	"k8s.io/kops/upup/pkg/fi"
-	cloudali "k8s.io/kops/upup/pkg/fi/cloudup/aliup"
 	"k8s.io/kops/upup/pkg/fi/cloudup/awsup"
+	cloudazure "k8s.io/kops/upup/pkg/fi/cloudup/azure"
+	clouddo "k8s.io/kops/upup/pkg/fi/cloudup/do"
 	cloudgce "k8s.io/kops/upup/pkg/fi/cloudup/gce"
+	cloudhetzner "k8s.io/kops/upup/pkg/fi/cloudup/hetzner"
 	cloudopenstack "k8s.io/kops/upup/pkg/fi/cloudup/openstack"
-	"k8s.io/kops/upup/pkg/fi/cloudup/vsphere"
+	cloudscaleway "k8s.io/kops/upup/pkg/fi/cloudup/scaleway"
 )
 
 // ListResources collects the resources from the specified cloud
-func ListResources(cloud fi.Cloud, clusterName string, region string) (map[string]*resources.Resource, error) {
+func ListResources(cloud fi.Cloud, cluster *kops.Cluster) (map[string]*resources.Resource, error) {
+	clusterInfo := resources.ClusterInfo{
+		Name:        cluster.Name,
+		UsesNoneDNS: cluster.UsesNoneDNS(),
+	}
+
 	switch cloud.ProviderID() {
 	case kops.CloudProviderAWS:
-		return aws.ListResourcesAWS(cloud.(awsup.AWSCloud), clusterName)
+		return aws.ListResourcesAWS(cloud.(awsup.AWSCloud), clusterInfo)
 	case kops.CloudProviderDO:
-		return digitalocean.ListResources(cloud.(*digitalocean.Cloud), clusterName)
+		return digitalocean.ListResources(cloud.(clouddo.DOCloud), clusterInfo)
 	case kops.CloudProviderGCE:
-		return gce.ListResourcesGCE(cloud.(cloudgce.GCECloud), clusterName, region)
+		return gce.ListResourcesGCE(cloud.(cloudgce.GCECloud), clusterInfo)
+	case kops.CloudProviderHetzner:
+		return hetzner.ListResources(cloud.(cloudhetzner.HetznerCloud), clusterInfo)
 	case kops.CloudProviderOpenstack:
-		return openstack.ListResources(cloud.(cloudopenstack.OpenstackCloud), clusterName)
-	case kops.CloudProviderVSphere:
-		return resources.ListResourcesVSphere(cloud.(*vsphere.VSphereCloud), clusterName)
-	case kops.CloudProviderALI:
-		return ali.ListResourcesALI(cloud.(cloudali.ALICloud), clusterName, region)
+		return openstack.ListResources(cloud.(cloudopenstack.OpenstackCloud), clusterInfo)
+	case kops.CloudProviderAzure:
+		clusterInfo.AzureResourceGroupName = cluster.AzureResourceGroupName()
+		clusterInfo.AzureResourceGroupShared = cluster.IsSharedAzureResourceGroup()
+		clusterInfo.AzureNetworkShared = cluster.SharedVPC()
+		clusterInfo.AzureRouteTableShared = cluster.IsSharedAzureRouteTable()
+		return azure.ListResourcesAzure(cloud.(cloudazure.AzureCloud), clusterInfo)
+	case kops.CloudProviderScaleway:
+		return scaleway.ListResources(cloud.(cloudscaleway.ScwCloud), clusterInfo)
 	default:
 		return nil, fmt.Errorf("delete on clusters on %q not (yet) supported", cloud.ProviderID())
 	}

@@ -1,5 +1,5 @@
 /*
-Copyright 2018 The Kubernetes Authors.
+Copyright 2019 The Kubernetes Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -17,50 +17,55 @@ limitations under the License.
 package model
 
 import (
-	"k8s.io/kops/nodeup/pkg/distros"
 	"k8s.io/kops/pkg/apis/kops"
 	"k8s.io/kops/pkg/systemd"
 	"k8s.io/kops/upup/pkg/fi"
 	"k8s.io/kops/upup/pkg/fi/nodeup/nodetasks"
+	"k8s.io/kops/util/pkg/distributions"
 
-	"k8s.io/klog"
+	"k8s.io/klog/v2"
 )
 
-// UpdateServiceBuilder disables the OS automatic updates
+// UpdateServiceBuilder enables/disables the OS automatic updates.
 type UpdateServiceBuilder struct {
 	*NodeupModelContext
 }
 
-// ServiceName is the name given to the service to be created
-const ServiceName = "update-service"
+const (
+	flatcarServiceName = "update-service"
+	debianPackageName  = "unattended-upgrades"
+)
 
-var _ fi.ModelBuilder = &UpdateServiceBuilder{}
+var _ fi.NodeupModelBuilder = &UpdateServiceBuilder{}
 
-// Build is responsible for creating the relevant systemd service based on OS
-func (b *UpdateServiceBuilder) Build(c *fi.ModelBuilderContext) error {
-	if b.Cluster.Spec.UpdatePolicy == nil || *b.Cluster.Spec.UpdatePolicy != kops.UpdatePolicyExternal {
-		klog.Infof("UpdatePolicy not set in Cluster Spec; skipping creation of %s", ServiceName)
-		return nil
-	}
-
-	for _, spec := range [][]kops.HookSpec{b.InstanceGroup.Spec.Hooks, b.Cluster.Spec.Hooks} {
-		for _, hook := range spec {
-			if hook.Name == ServiceName || hook.Name == ServiceName+".service" {
-				klog.Infof("Detected kops Hook for '%s'; skipping creation", ServiceName)
-				return nil
-			}
-		}
-	}
-
-	if b.Distribution == distros.DistributionCoreOS {
-		klog.Infof("Detected OS %s; building %s service to disable update scheduler", ServiceName, b.Distribution)
-		c.AddTask(b.buildCoreOSSystemdService())
+// Build is responsible for configuring automatic updates based on the OS.
+func (b *UpdateServiceBuilder) Build(c *fi.NodeupModelBuilderContext) error {
+	if b.Distribution == distributions.DistributionFlatcar {
+		b.buildFlatcarSystemdService(c)
+	} else if b.Distribution.IsDebianFamily() {
+		b.buildDebianPackage(c)
 	}
 
 	return nil
 }
 
-func (b *UpdateServiceBuilder) buildCoreOSSystemdService() *nodetasks.Service {
+func (b *UpdateServiceBuilder) buildFlatcarSystemdService(c *fi.NodeupModelBuilderContext) {
+	if b.NodeupConfig.UpdatePolicy != kops.UpdatePolicyExternal {
+		klog.Infof("UpdatePolicy requests automatic updates; skipping creation of systemd unit %q", flatcarServiceName)
+		return
+	}
+
+	for _, spec := range b.NodeupConfig.Hooks {
+		for _, hook := range spec {
+			if hook.Name == flatcarServiceName || hook.Name == flatcarServiceName+".service" {
+				klog.Infof("Detected kops Hook for '%s'; skipping creation", flatcarServiceName)
+				return
+			}
+		}
+	}
+
+	klog.Infof("Detected OS %s; building %s service to disable update scheduler", b.Distribution, flatcarServiceName)
+
 	manifest := &systemd.Manifest{}
 	manifest.Set("Unit", "Description", "Disable OS Update Scheduler")
 
@@ -69,14 +74,38 @@ func (b *UpdateServiceBuilder) buildCoreOSSystemdService() *nodetasks.Service {
 	manifest.Set("Service", "ExecStart", "/usr/bin/systemctl mask --now locksmithd.service")
 
 	manifestString := manifest.Render()
-	klog.V(8).Infof("Built service manifest %q\n%s", ServiceName, manifestString)
+	klog.V(8).Infof("Built service manifest %q\n%s", flatcarServiceName, manifestString)
 
 	service := &nodetasks.Service{
-		Name:       ServiceName + ".service",
+		Name:       flatcarServiceName + ".service",
 		Definition: s(manifestString),
 	}
 
 	service.InitDefaults()
+	c.AddTask(service)
+}
 
-	return service
+func (b *UpdateServiceBuilder) buildDebianPackage(c *fi.NodeupModelBuilderContext) {
+	contents := ""
+	if b.NodeupConfig.UpdatePolicy == kops.UpdatePolicyExternal {
+		klog.Infof("UpdatePolicy requests automatic updates; skipping installation of package %q", debianPackageName)
+		contents = `APT::Periodic::Enable "0";
+`
+	} else {
+
+		klog.Infof("Detected OS %v; installing %s package", b.Distribution, debianPackageName)
+		c.AddTask(&nodetasks.Package{Name: debianPackageName})
+
+		contents = `APT::Periodic::Update-Package-Lists "1";
+APT::Periodic::Unattended-Upgrade "1";
+
+APT::Periodic::AutocleanInterval "7";
+`
+	}
+
+	c.AddTask(&nodetasks.File{
+		Path:     "/etc/apt/apt.conf.d/20auto-upgrades",
+		Contents: fi.NewStringResource(contents),
+		Type:     nodetasks.FileType_File,
+	})
 }

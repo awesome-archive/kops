@@ -1,5 +1,5 @@
 /*
-Copyright 2016 The Kubernetes Authors.
+Copyright 2019 The Kubernetes Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -17,26 +17,26 @@ limitations under the License.
 package awstasks
 
 import (
-	"fmt"
-
 	"encoding/base64"
+	"fmt"
 	"strings"
 
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/ec2"
-	"k8s.io/klog"
+	"k8s.io/klog/v2"
 	"k8s.io/kops/upup/pkg/fi"
 	"k8s.io/kops/upup/pkg/fi/cloudup/awsup"
-	"k8s.io/kops/upup/pkg/fi/cloudup/terraform"
+	"k8s.io/kops/upup/pkg/fi/cloudup/terraformWriter"
 )
 
 // MaxUserDataSize is the max size of the userdata
 const MaxUserDataSize = 16384
 
 // Instance defines the instance specification
+// +kops:fitask
 type Instance struct {
 	ID        *string
-	Lifecycle *fi.Lifecycle
+	Lifecycle fi.Lifecycle
 
 	UserData fi.Resource
 
@@ -62,11 +62,11 @@ func (s *Instance) CompareWithID() *string {
 	return s.ID
 }
 
-func (e *Instance) Find(c *fi.Context) (*Instance, error) {
-	cloud := c.Cloud.(awsup.AWSCloud)
+func (e *Instance) Find(c *fi.CloudupContext) (*Instance, error) {
+	cloud := c.T.Cloud.(awsup.AWSCloud)
 	var request *ec2.DescribeInstancesInput
 
-	if fi.BoolValue(e.Shared) {
+	if fi.ValueOf(e.Shared) {
 		var instanceIds []*string
 		instanceIds = append(instanceIds, e.ID)
 		request = &ec2.DescribeInstancesInput{
@@ -88,9 +88,7 @@ func (e *Instance) Find(c *fi.Context) (*Instance, error) {
 	instances := []*ec2.Instance{}
 	if response != nil {
 		for _, reservation := range response.Reservations {
-			for _, instance := range reservation.Instances {
-				instances = append(instances, instance)
-			}
+			instances = append(instances, reservation.Instances...)
 		}
 	}
 
@@ -196,13 +194,13 @@ func nameFromIAMARN(arn *string) *string {
 	return &name
 }
 
-func (e *Instance) Run(c *fi.Context) error {
-	return fi.DefaultDeltaRunMethod(e, c)
+func (e *Instance) Run(c *fi.CloudupContext) error {
+	return fi.CloudupDefaultDeltaRunMethod(e, c)
 }
 
 func (_ *Instance) CheckChanges(a, e, changes *Instance) error {
 	if a != nil {
-		if !fi.BoolValue(e.Shared) && e.Name == nil {
+		if !fi.ValueOf(e.Shared) && e.Name == nil {
 			return fi.RequiredField("Name")
 		}
 	}
@@ -212,19 +210,19 @@ func (_ *Instance) CheckChanges(a, e, changes *Instance) error {
 func (_ *Instance) RenderAWS(t *awsup.AWSAPITarget, a, e, changes *Instance) error {
 	if a == nil {
 
-		if fi.BoolValue(e.Shared) {
-			return fmt.Errorf("NAT EC2 Instance %q not found", fi.StringValue(e.ID))
+		if fi.ValueOf(e.Shared) {
+			return fmt.Errorf("NAT EC2 Instance %q not found", fi.ValueOf(e.ID))
 		}
 
 		if e.ImageID == nil {
 			return fi.RequiredField("ImageID")
 		}
-		image, err := t.Cloud.ResolveImage(fi.StringValue(e.ImageID))
+		image, err := t.Cloud.ResolveImage(fi.ValueOf(e.ImageID))
 		if err != nil {
 			return err
 		}
 
-		klog.V(2).Infof("Creating Instance with Name:%q", fi.StringValue(e.Name))
+		klog.V(2).Infof("Creating Instance with Name:%q", fi.ValueOf(e.Name))
 		request := &ec2.RunInstancesInput{
 			ImageId:      image.ImageId,
 			InstanceType: e.InstanceType,
@@ -252,7 +250,7 @@ func (_ *Instance) RenderAWS(t *awsup.AWSAPITarget, a, e, changes *Instance) err
 
 		// Build up the actual block device mappings
 		// TODO: Support RootVolumeType & RootVolumeSize (see launchconfiguration)
-		blockDeviceMappings, err := buildEphemeralDevices(t.Cloud, fi.StringValue(e.InstanceType))
+		blockDeviceMappings, err := buildEphemeralDevices(t.Cloud, fi.ValueOf(e.InstanceType))
 		if err != nil {
 			return err
 		}
@@ -298,14 +296,14 @@ func (_ *Instance) RenderAWS(t *awsup.AWSAPITarget, a, e, changes *Instance) err
 	return t.AddAWSTags(*e.ID, e.Tags)
 }
 
-func (e *Instance) TerraformLink() *terraform.Literal {
-	if fi.BoolValue(e.Shared) {
+func (e *Instance) TerraformLink() *terraformWriter.Literal {
+	if fi.ValueOf(e.Shared) {
 		if e.ID == nil {
 			klog.Fatalf("ID must be set, if NAT Instance is shared: %s", e)
 		}
 
-		return terraform.LiteralFromStringValue(*e.ID)
+		return terraformWriter.LiteralFromStringValue(*e.ID)
 	}
 
-	return terraform.LiteralSelfLink("aws_instance", *e.Name)
+	return terraformWriter.LiteralSelfLink("aws_instance", *e.Name)
 }

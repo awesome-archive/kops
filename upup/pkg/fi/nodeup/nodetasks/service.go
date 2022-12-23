@@ -1,5 +1,5 @@
 /*
-Copyright 2016 The Kubernetes Authors.
+Copyright 2019 The Kubernetes Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -17,20 +17,18 @@ limitations under the License.
 package nodetasks
 
 import (
-	"encoding/json"
 	"fmt"
-	"io/ioutil"
 	"os"
 	"os/exec"
 	"path"
 	"strings"
 	"time"
 
-	"k8s.io/klog"
+	"k8s.io/klog/v2"
 	"k8s.io/kops/upup/pkg/fi"
-	"k8s.io/kops/upup/pkg/fi/nodeup/cloudinit"
+	"k8s.io/kops/upup/pkg/fi/nodeup/install"
 	"k8s.io/kops/upup/pkg/fi/nodeup/local"
-	"k8s.io/kops/upup/pkg/fi/nodeup/tags"
+	"k8s.io/kops/util/pkg/distributions"
 )
 
 const (
@@ -39,11 +37,14 @@ const (
 	// TODO: Generally only repo packages write to /usr/lib/systemd/system on _rhel_family
 	// But we use it in two ways: we update the docker manifest, and we install our own
 	// package (protokube, kubelet).  Maybe we should have the idea of a "system" package.
-	centosSystemdSystemPath = "/usr/lib/systemd/system"
-
-	coreosSystemdSystemPath = "/etc/systemd/system"
-
+	centosSystemdSystemPath      = "/usr/lib/systemd/system"
+	flatcarSystemdSystemPath     = "/etc/systemd/system"
 	containerosSystemdSystemPath = "/etc/systemd/system"
+
+	containerdService = "containerd.service"
+	dockerService     = "docker.service"
+	kubeletService    = "kubelet.service"
+	protokubeService  = "protokube.service"
 )
 
 type Service struct {
@@ -58,21 +59,53 @@ type Service struct {
 	SmartRestart *bool `json:"smartRestart,omitempty"`
 }
 
-var _ fi.HasDependencies = &Service{}
-var _ fi.HasName = &Service{}
+type InstallService struct {
+	Service
+}
 
-func (p *Service) GetDependencies(tasks map[string]fi.Task) []fi.Task {
-	var deps []fi.Task
+var (
+	_ fi.InstallHasDependencies = &InstallService{}
+	_ fi.NodeupHasDependencies  = &Service{}
+	_ fi.HasName                = &InstallService{}
+	_ fi.HasName                = &Service{}
+)
+
+func (i *InstallService) GetDependencies(tasks map[string]fi.InstallTask) []fi.InstallTask {
+	var deps []fi.InstallTask
+	for _, v := range tasks {
+		if _, ok := v.(*InstallService); !ok {
+			deps = append(deps, v)
+		}
+	}
+	return deps
+}
+
+func (s *Service) GetDependencies(tasks map[string]fi.NodeupTask) []fi.NodeupTask {
+	var deps []fi.NodeupTask
 	for _, v := range tasks {
 		// We assume that services depend on everything except for
-		// LoadImageTask. If there are any LoadImageTasks (e.g. we're
+		// LoadImageTask or IssueCert. If there are any LoadImageTasks (e.g. we're
 		// launching a custom Kubernetes build), they all depend on
 		// the "docker.service" Service task.
-		switch v.(type) {
-		case *File, *Package, *UpdatePackages, *UserTask, *GroupTask, *MountDiskTask, *Chattr:
+		switch v := v.(type) {
+		case *Package, *UpdatePackages, *UserTask, *GroupTask, *Chattr, *BindMount, *Archive, *Prefix, *UpdateEtcHostsTask:
 			deps = append(deps, v)
-		case *Service, *LoadImageTask:
+		case *Service, *PullImageTask, *IssueCert, *BootstrapClientTask, *KubeConfig:
 			// ignore
+		case *LoadImageTask:
+			if s.Name == kubeletService {
+				deps = append(deps, v)
+			}
+		case *File:
+			if len(v.BeforeServices) > 0 {
+				for _, b := range v.BeforeServices {
+					if s.Name == b {
+						deps = append(deps, v)
+					}
+				}
+			} else {
+				deps = append(deps, v)
+			}
 		default:
 			klog.Warningf("Unhandled type %T in Service::GetDependencies: %v", v, v)
 			deps = append(deps, v)
@@ -85,38 +118,28 @@ func (s *Service) String() string {
 	return fmt.Sprintf("Service: %s", s.Name)
 }
 
-func NewService(name string, contents string, meta string) (fi.Task, error) {
-	s := &Service{Name: name}
-	s.Definition = fi.String(contents)
-
-	if meta != "" {
-		err := json.Unmarshal([]byte(meta), s)
-		if err != nil {
-			return nil, fmt.Errorf("error parsing json for service %q: %v", name, err)
-		}
-	}
-
-	s.InitDefaults()
-
-	return s, nil
+func (i *InstallService) InitDefaults() *InstallService {
+	i.Service.InitDefaults()
+	return i
 }
-
-func (s *Service) InitDefaults() {
+func (s *Service) InitDefaults() *Service {
 	// Default some values to true: Running, SmartRestart, ManageState
 	if s.Running == nil {
-		s.Running = fi.Bool(true)
+		s.Running = fi.PtrTo(true)
 	}
 	if s.SmartRestart == nil {
-		s.SmartRestart = fi.Bool(true)
+		s.SmartRestart = fi.PtrTo(true)
 	}
 	if s.ManageState == nil {
-		s.ManageState = fi.Bool(true)
+		s.ManageState = fi.PtrTo(true)
 	}
 
 	// Default Enabled to be the same as running
 	if s.Enabled == nil {
 		s.Enabled = s.Running
 	}
+
+	return s
 }
 
 func getSystemdStatus(name string) (map[string]string, error) {
@@ -141,29 +164,41 @@ func getSystemdStatus(name string) (map[string]string, error) {
 	return properties, nil
 }
 
-func (e *Service) systemdSystemPath(target tags.HasTags) (string, error) {
-	if target.HasTag(tags.TagOSFamilyDebian) {
+func (_ *Service) systemdSystemPath() (string, error) {
+	d, err := distributions.FindDistribution("/")
+	if err != nil {
+		return "", fmt.Errorf("unknown or unsupported distro: %v", err)
+	}
+
+	if d.IsDebianFamily() {
 		return debianSystemdSystemPath, nil
-	} else if target.HasTag(tags.TagOSFamilyRHEL) {
+	} else if d.IsRHELFamily() {
 		return centosSystemdSystemPath, nil
-	} else if target.HasTag("_coreos") {
-		return coreosSystemdSystemPath, nil
-	} else if target.HasTag("_containeros") {
+	} else if d == distributions.DistributionFlatcar {
+		return flatcarSystemdSystemPath, nil
+	} else if d == distributions.DistributionContainerOS {
 		return containerosSystemdSystemPath, nil
 	} else {
 		return "", fmt.Errorf("unsupported systemd system")
 	}
 }
 
-func (e *Service) Find(c *fi.Context) (*Service, error) {
-	systemdSystemPath, err := e.systemdSystemPath(c.Target.(tags.HasTags))
+func (e *InstallService) Find(_ *fi.InstallContext) (*InstallService, error) {
+	actual, err := e.Service.Find(nil)
+	if actual == nil || err != nil {
+		return nil, err
+	}
+	return &InstallService{*actual}, nil
+}
+func (e *Service) Find(_ *fi.NodeupContext) (*Service, error) {
+	systemdSystemPath, err := e.systemdSystemPath()
 	if err != nil {
 		return nil, err
 	}
 
 	servicePath := path.Join(systemdSystemPath, e.Name)
 
-	d, err := ioutil.ReadFile(servicePath)
+	d, err := os.ReadFile(servicePath)
 	if err != nil {
 		if !os.IsNotExist(err) {
 			return nil, fmt.Errorf("Error reading systemd file %q: %v", servicePath, err)
@@ -173,13 +208,13 @@ func (e *Service) Find(c *fi.Context) (*Service, error) {
 		return &Service{
 			Name:       e.Name,
 			Definition: nil,
-			Running:    fi.Bool(false),
+			Running:    fi.PtrTo(false),
 		}, nil
 	}
 
 	actual := &Service{
 		Name:       e.Name,
-		Definition: fi.String(string(d)),
+		Definition: fi.PtrTo(string(d)),
 
 		// Avoid spurious changes
 		ManageState:  e.ManageState,
@@ -194,27 +229,27 @@ func (e *Service) Find(c *fi.Context) (*Service, error) {
 	activeState := properties["ActiveState"]
 	switch activeState {
 	case "active":
-		actual.Running = fi.Bool(true)
+		actual.Running = fi.PtrTo(true)
 
 	case "failed", "inactive":
-		actual.Running = fi.Bool(false)
+		actual.Running = fi.PtrTo(false)
 	default:
 		klog.Warningf("Unknown ActiveState=%q; will treat as not running", activeState)
-		actual.Running = fi.Bool(false)
+		actual.Running = fi.PtrTo(false)
 	}
 
 	wantedBy := properties["WantedBy"]
 	switch wantedBy {
 	case "":
-		actual.Enabled = fi.Bool(false)
+		actual.Enabled = fi.PtrTo(false)
 
 	// TODO: Can probably do better here!
 	case "multi-user.target", "graphical.target multi-user.target":
-		actual.Enabled = fi.Bool(true)
+		actual.Enabled = fi.PtrTo(true)
 
 	default:
 		klog.Warningf("Unknown WantedBy=%q; will treat as not enabled", wantedBy)
-		actual.Enabled = fi.Bool(false)
+		actual.Enabled = fi.PtrTo(false)
 	}
 
 	return actual, nil
@@ -245,16 +280,32 @@ func getSystemdDependencies(serviceName string, definition string) ([]string, er
 	return dependencies, nil
 }
 
-func (e *Service) Run(c *fi.Context) error {
-	return fi.DefaultDeltaRunMethod(e, c)
+func (e *InstallService) Run(c *fi.InstallContext) error {
+	return fi.InstallDefaultDeltaRunMethod(e, c)
+}
+
+func (e *Service) Run(c *fi.NodeupContext) error {
+	return fi.NodeupDefaultDeltaRunMethod(e, c)
+}
+
+func (i *InstallService) CheckChanges(a, e, changes *InstallService) error {
+	return nil
 }
 
 func (s *Service) CheckChanges(a, e, changes *Service) error {
 	return nil
 }
 
-func (_ *Service) RenderLocal(t *local.LocalTarget, a, e, changes *Service) error {
-	systemdSystemPath, err := e.systemdSystemPath(t)
+func (i *InstallService) RenderInstall(_ *install.InstallTarget, a, e, changes *InstallService) error {
+	var actual *Service
+	if a != nil {
+		actual = &a.Service
+	}
+
+	return i.Service.RenderLocal(nil, actual, &e.Service, &changes.Service)
+}
+func (s *Service) RenderLocal(_ *local.LocalTarget, a, e, changes *Service) error {
+	systemdSystemPath, err := e.systemdSystemPath()
 	if err != nil {
 		return err
 	}
@@ -263,8 +314,8 @@ func (_ *Service) RenderLocal(t *local.LocalTarget, a, e, changes *Service) erro
 
 	action := ""
 
-	if changes.Running != nil && fi.BoolValue(e.ManageState) {
-		if fi.BoolValue(e.Running) {
+	if changes.Running != nil && fi.ValueOf(e.ManageState) {
+		if fi.ValueOf(e.Running) {
 			action = "restart"
 		} else {
 			action = "stop"
@@ -273,7 +324,7 @@ func (_ *Service) RenderLocal(t *local.LocalTarget, a, e, changes *Service) erro
 
 	if changes.Definition != nil {
 		servicePath := path.Join(systemdSystemPath, serviceName)
-		err := fi.WriteFile(servicePath, fi.NewStringResource(*e.Definition), 0644, 0755)
+		err := fi.WriteFile(servicePath, fi.NewStringResource(*e.Definition), 0o644, 0o755, "", "")
 		if err != nil {
 			return fmt.Errorf("error writing systemd service file: %v", err)
 		}
@@ -287,13 +338,13 @@ func (_ *Service) RenderLocal(t *local.LocalTarget, a, e, changes *Service) erro
 	}
 
 	// "SmartRestart" - look at the obvious dependencies in the systemd service, restart if start time older
-	if fi.BoolValue(e.ManageState) && fi.BoolValue(e.SmartRestart) {
-		definition := fi.StringValue(e.Definition)
+	if fi.ValueOf(e.ManageState) && fi.ValueOf(e.SmartRestart) {
+		definition := fi.ValueOf(e.Definition)
 		if definition == "" && a != nil {
-			definition = fi.StringValue(a.Definition)
+			definition = fi.ValueOf(a.Definition)
 		}
 
-		if action == "" && fi.BoolValue(e.Running) && definition != "" {
+		if action == "" && fi.ValueOf(e.Running) && definition != "" {
 			dependencies, err := getSystemdDependencies(serviceName, definition)
 			if err != nil {
 				return err
@@ -340,7 +391,7 @@ func (_ *Service) RenderLocal(t *local.LocalTarget, a, e, changes *Service) erro
 		}
 	}
 
-	if action != "" && fi.BoolValue(e.ManageState) {
+	if action != "" && fi.ValueOf(e.ManageState) {
 		klog.Infof("Restarting service %q", serviceName)
 		cmd := exec.Command("systemctl", action, serviceName)
 		output, err := cmd.CombinedOutput()
@@ -349,9 +400,9 @@ func (_ *Service) RenderLocal(t *local.LocalTarget, a, e, changes *Service) erro
 		}
 	}
 
-	if changes.Enabled != nil && fi.BoolValue(e.ManageState) {
+	if changes.Enabled != nil && fi.ValueOf(e.ManageState) {
 		var args []string
-		if fi.BoolValue(e.Enabled) {
+		if fi.ValueOf(e.Enabled) {
 			klog.Infof("Enabling service %q", serviceName)
 			args = []string{"enable", serviceName}
 		} else {
@@ -369,34 +420,6 @@ func (_ *Service) RenderLocal(t *local.LocalTarget, a, e, changes *Service) erro
 	return nil
 }
 
-func (_ *Service) RenderCloudInit(t *cloudinit.CloudInitTarget, a, e, changes *Service) error {
-	systemdSystemPath, err := e.systemdSystemPath(t)
-	if err != nil {
-		return err
-	}
-
-	serviceName := e.Name
-
-	servicePath := path.Join(systemdSystemPath, serviceName)
-	err = t.WriteFile(servicePath, fi.NewStringResource(*e.Definition), 0644, 0755)
-	if err != nil {
-		return err
-	}
-
-	if fi.BoolValue(e.ManageState) {
-		t.AddCommand(cloudinit.Once, "systemctl", "daemon-reload")
-		t.AddCommand(cloudinit.Once, "systemctl", "start", "--no-block", serviceName)
-	}
-
-	return nil
-}
-
-var _ fi.HasName = &Service{}
-
-func (f *Service) GetName() *string {
-	return &f.Name
-}
-
-func (f *Service) SetName(name string) {
-	klog.Fatalf("SetName not supported for Service task")
+func (s *Service) GetName() *string {
+	return &s.Name
 }

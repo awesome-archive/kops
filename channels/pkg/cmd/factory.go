@@ -17,45 +17,18 @@ limitations under the License.
 package cmd
 
 import (
-	"fmt"
-
+	"k8s.io/client-go/dynamic"
 	"k8s.io/client-go/kubernetes"
-	"k8s.io/client-go/tools/clientcmd"
+	"k8s.io/client-go/restmapper"
 
 	_ "k8s.io/client-go/plugin/pkg/client/auth"
+
+	certmanager "github.com/cert-manager/cert-manager/pkg/client/clientset/versioned"
 )
 
 type Factory interface {
 	KubernetesClient() (kubernetes.Interface, error)
-}
-
-type DefaultFactory struct {
-	kubernetesClient kubernetes.Interface
-}
-
-var _ Factory = &DefaultFactory{}
-
-func (f *DefaultFactory) KubernetesClient() (kubernetes.Interface, error) {
-	if f.kubernetesClient == nil {
-		loadingRules := clientcmd.NewDefaultClientConfigLoadingRules()
-		loadingRules.DefaultClientConfig = &clientcmd.DefaultClientConfig
-
-		configOverrides := &clientcmd.ConfigOverrides{
-			ClusterDefaults: clientcmd.ClusterDefaults,
-		}
-
-		kubeConfig := clientcmd.NewNonInteractiveDeferredLoadingClientConfig(loadingRules, configOverrides)
-		config, err := kubeConfig.ClientConfig()
-		if err != nil {
-			return nil, fmt.Errorf("cannot load kubecfg settings: %v", err)
-		}
-
-		k8sClient, err := kubernetes.NewForConfig(config)
-		if err != nil {
-			return nil, fmt.Errorf("cannot build kube client: %v", err)
-		}
-		f.kubernetesClient = k8sClient
-	}
-
-	return f.kubernetesClient, nil
+	CertManagerClient() (certmanager.Interface, error)
+	RESTMapper() (*restmapper.DeferredDiscoveryRESTMapper, error)
+	DynamicClient() (dynamic.Interface, error)
 }

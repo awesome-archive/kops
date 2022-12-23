@@ -1,5 +1,5 @@
 /*
-Copyright 2016 The Kubernetes Authors.
+Copyright 2019 The Kubernetes Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -34,8 +34,10 @@ const (
 // DefaultInstanceGroupVolumeSize returns the default volume size for nodes in an InstanceGroup with the specified role
 func DefaultInstanceGroupVolumeSize(role kops.InstanceGroupRole) (int32, error) {
 	switch role {
-	case kops.InstanceGroupRoleMaster:
+	case kops.InstanceGroupRoleControlPlane:
 		return DefaultVolumeSizeMaster, nil
+	case kops.InstanceGroupRoleAPIServer:
+		return DefaultVolumeSizeNode, nil
 	case kops.InstanceGroupRoleNode:
 		return DefaultVolumeSizeNode, nil
 	case kops.InstanceGroupRoleBastion:

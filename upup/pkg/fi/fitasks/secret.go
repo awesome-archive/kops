@@ -1,5 +1,5 @@
 /*
-Copyright 2016 The Kubernetes Authors.
+Copyright 2019 The Kubernetes Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -22,23 +22,23 @@ import (
 	"k8s.io/kops/upup/pkg/fi"
 )
 
-//go:generate fitask -type=Secret
+// +kops:fitask
 type Secret struct {
 	Name      *string
-	Lifecycle *fi.Lifecycle
+	Lifecycle fi.Lifecycle
 }
 
-var _ fi.HasCheckExisting = &Secret{}
+var _ fi.CloudupHasCheckExisting = &Secret{}
 
 // It's important always to check for the existing Secret, so we don't regenerate tokens e.g. on terraform
-func (e *Secret) CheckExisting(c *fi.Context) bool {
+func (e *Secret) CheckExisting(c *fi.CloudupContext) bool {
 	return true
 }
 
-func (e *Secret) Find(c *fi.Context) (*Secret, error) {
-	secrets := c.SecretStore
+func (e *Secret) Find(c *fi.CloudupContext) (*Secret, error) {
+	secrets := c.T.SecretStore
 
-	name := fi.StringValue(e.Name)
+	name := fi.ValueOf(e.Name)
 	if name == "" {
 		return nil, nil
 	}
@@ -61,8 +61,8 @@ func (e *Secret) Find(c *fi.Context) (*Secret, error) {
 	return actual, nil
 }
 
-func (e *Secret) Run(c *fi.Context) error {
-	return fi.DefaultDeltaRunMethod(e, c)
+func (e *Secret) Run(c *fi.CloudupContext) error {
+	return fi.CloudupDefaultDeltaRunMethod(e, c)
 }
 
 func (s *Secret) CheckChanges(a, e, changes *Secret) error {
@@ -74,13 +74,13 @@ func (s *Secret) CheckChanges(a, e, changes *Secret) error {
 	return nil
 }
 
-func (_ *Secret) Render(c *fi.Context, a, e, changes *Secret) error {
-	name := fi.StringValue(e.Name)
+func (_ *Secret) Render(c *fi.CloudupContext, a, e, changes *Secret) error {
+	name := fi.ValueOf(e.Name)
 	if name == "" {
 		return fi.RequiredField("Name")
 	}
 
-	secrets := c.SecretStore
+	secrets := c.T.SecretStore
 
 	secret, err := fi.CreateSecret()
 	if err != nil {

@@ -1,5 +1,5 @@
 /*
-Copyright 2018 The Kubernetes Authors.
+Copyright 2019 The Kubernetes Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -24,7 +24,7 @@ type OpenstackAPITarget struct {
 	Cloud OpenstackCloud
 }
 
-var _ fi.Target = &OpenstackAPITarget{}
+var _ fi.CloudupTarget = &OpenstackAPITarget{}
 
 func NewOpenstackAPITarget(cloud OpenstackCloud) *OpenstackAPITarget {
 	return &OpenstackAPITarget{
@@ -32,10 +32,14 @@ func NewOpenstackAPITarget(cloud OpenstackCloud) *OpenstackAPITarget {
 	}
 }
 
-func (t *OpenstackAPITarget) Finish(taskMap map[string]fi.Task) error {
+func (t *OpenstackAPITarget) Finish(taskMap map[string]fi.CloudupTask) error {
 	return nil
 }
 
 func (t *OpenstackAPITarget) ProcessDeletions() bool {
+	return true
+}
+
+func (t *OpenstackAPITarget) DefaultCheckExisting() bool {
 	return true
 }

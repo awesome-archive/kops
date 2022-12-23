@@ -1,5 +1,5 @@
 /*
-Copyright 2016 The Kubernetes Authors.
+Copyright 2019 The Kubernetes Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -16,11 +16,19 @@ limitations under the License.
 
 package fi
 
-type Target interface {
+type Target[T SubContext] interface {
 	// Lifecycle methods, called by the driver
-	Finish(taskMap map[string]Task) error
+	Finish(taskMap map[string]Task[T]) error
 
 	// ProcessDeletions returns true if we should delete resources
 	// Some providers (e.g. Terraform) actively keep state, and will delete resources automatically
 	ProcessDeletions() bool
+
+	// DefaultCheckExisting returns true if DefaultDeltaRun tasks which aren't HasCheckExisting
+	// should invoke Find() when running against this Target.
+	DefaultCheckExisting() bool
 }
+
+type CloudupTarget = Target[CloudupSubContext]
+type InstallTarget = Target[InstallSubContext]
+type NodeupTarget = Target[NodeupSubContext]

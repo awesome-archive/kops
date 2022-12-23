@@ -17,6 +17,7 @@ limitations under the License.
 package awstasks
 
 import (
+	"context"
 	"reflect"
 	"testing"
 
@@ -28,6 +29,8 @@ import (
 )
 
 func TestSharedInternetGatewayDoesNotRename(t *testing.T) {
+	ctx := context.TODO()
+
 	cloud := awsup.BuildMockAWSCloud("us-east-1", "abc")
 	c := &mockec2.MockEC2{}
 	cloud.MockEC2 = c
@@ -74,25 +77,30 @@ func TestSharedInternetGatewayDoesNotRename(t *testing.T) {
 		InternetGatewayId: internetGateway.InternetGateway.InternetGatewayId,
 		VpcId:             vpc.Vpc.VpcId,
 	})
+	if err != nil {
+		t.Fatalf("error attaching igw: %v", err)
+	}
 
 	// We define a function so we can rebuild the tasks, because we modify in-place when running
-	buildTasks := func() map[string]fi.Task {
+	buildTasks := func() map[string]fi.CloudupTask {
 		vpc1 := &VPC{
-			Name:   s("vpc1"),
-			CIDR:   s("172.20.0.0/16"),
-			Tags:   map[string]string{"kubernetes.io/cluster/cluster.example.com": "shared"},
-			Shared: fi.Bool(true),
-			ID:     vpc.Vpc.VpcId,
+			Name:      s("vpc1"),
+			Lifecycle: fi.LifecycleSync,
+			CIDR:      s("172.20.0.0/16"),
+			Tags:      map[string]string{"kubernetes.io/cluster/cluster.example.com": "shared"},
+			Shared:    fi.PtrTo(true),
+			ID:        vpc.Vpc.VpcId,
 		}
 		igw1 := &InternetGateway{
-			Name:   s("igw1"),
-			VPC:    vpc1,
-			Shared: fi.Bool(true),
-			ID:     internetGateway.InternetGateway.InternetGatewayId,
-			Tags:   make(map[string]string),
+			Name:      s("igw1"),
+			Lifecycle: fi.LifecycleSync,
+			VPC:       vpc1,
+			Shared:    fi.PtrTo(true),
+			ID:        internetGateway.InternetGateway.InternetGatewayId,
+			Tags:      make(map[string]string),
 		}
 
-		return map[string]fi.Task{
+		return map[string]fi.CloudupTask{
 			"igw1": igw1,
 			"vpc1": vpc1,
 		}
@@ -106,7 +114,7 @@ func TestSharedInternetGatewayDoesNotRename(t *testing.T) {
 			Cloud: cloud,
 		}
 
-		context, err := fi.NewContext(target, nil, cloud, nil, nil, nil, true, allTasks)
+		context, err := fi.NewCloudupContext(ctx, target, nil, cloud, nil, nil, nil, allTasks)
 		if err != nil {
 			t.Fatalf("error building context: %v", err)
 		}
@@ -115,7 +123,7 @@ func TestSharedInternetGatewayDoesNotRename(t *testing.T) {
 			t.Fatalf("unexpected error during Run: %v", err)
 		}
 
-		if fi.StringValue(igw1.ID) == "" {
+		if fi.ValueOf(igw1.ID) == "" {
 			t.Fatalf("ID not set after create")
 		}
 
@@ -149,6 +157,6 @@ func TestSharedInternetGatewayDoesNotRename(t *testing.T) {
 
 	{
 		allTasks := buildTasks()
-		checkNoChanges(t, cloud, allTasks)
+		checkNoChanges(t, ctx, cloud, allTasks)
 	}
 }

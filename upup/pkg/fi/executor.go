@@ -1,5 +1,5 @@
 /*
-Copyright 2016 The Kubernetes Authors.
+Copyright 2019 The Kubernetes Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -22,22 +22,22 @@ import (
 	"sync"
 	"time"
 
-	"k8s.io/klog"
+	"k8s.io/klog/v2"
 )
 
-type executor struct {
-	context *Context
+type executor[T SubContext] struct {
+	context *Context[T]
 
 	options RunTasksOptions
 }
 
-type taskState struct {
+type taskState[T SubContext] struct {
 	done         bool
 	key          string
-	task         Task
+	task         Task[T]
 	deadline     time.Time
 	lastError    error
-	dependencies []*taskState
+	dependencies []*taskState[T]
 }
 
 type RunTasksOptions struct {
@@ -52,13 +52,21 @@ func (o *RunTasksOptions) InitDefaults() {
 
 // RunTasks executes all the tasks, considering their dependencies
 // It will perform some re-execution on error, retrying as long as progress is still being made
-func (e *executor) RunTasks(taskMap map[string]Task) error {
+func (e *executor[T]) RunTasks(taskMap map[string]Task[T]) error {
 	dependencies := FindTaskDependencies(taskMap)
 
-	taskStates := make(map[string]*taskState)
+	for _, task := range taskMap {
+		if taskPreRun, ok := task.(TaskPreRun[T]); ok {
+			if err := taskPreRun.PreRun(e.context); err != nil {
+				return err
+			}
+		}
+	}
+
+	taskStates := make(map[string]*taskState[T])
 
 	for k, task := range taskMap {
-		ts := &taskState{
+		ts := &taskState[T]{
 			key:  k,
 			task: task,
 		}
@@ -76,7 +84,7 @@ func (e *executor) RunTasks(taskMap map[string]Task) error {
 	}
 
 	for {
-		var canRun []*taskState
+		var canRun []*taskState[T]
 		doneCount := 0
 		for _, ts := range taskStates {
 			if ts.done {
@@ -107,10 +115,8 @@ func (e *executor) RunTasks(taskMap map[string]Task) error {
 
 		progress := false
 
-		var tasks []*taskState
-		for _, ts := range canRun {
-			tasks = append(tasks, ts)
-		}
+		var tasks []*taskState[T]
+		tasks = append(tasks, canRun...)
 
 		taskErrors := e.forkJoin(tasks)
 		var errors []error
@@ -126,8 +132,12 @@ func (e *executor) RunTasks(taskMap map[string]Task) error {
 					continue
 				}
 
-				remaining := time.Second * time.Duration(int(ts.deadline.Sub(time.Now()).Seconds()))
-				klog.Warningf("error running task %q (%v remaining to succeed): %v", ts.key, remaining, err)
+				remaining := time.Second * time.Duration(int(time.Until(ts.deadline).Seconds()))
+				if _, ok := err.(*TryAgainLaterError); ok {
+					klog.V(2).Infof("Task %q not ready: %v", ts.key, err)
+				} else {
+					klog.Warningf("error running task %q (%v remaining to succeed): %v", ts.key, remaining, err)
+				}
 				errors = append(errors, err)
 				ts.lastError = err
 			} else {
@@ -142,7 +152,7 @@ func (e *executor) RunTasks(taskMap map[string]Task) error {
 				// Logic error!
 				panic("did not make progress executing tasks; but no errors reported")
 			}
-			klog.Infof("No progress made, sleeping before retrying %d failed task(s)", len(errors))
+			klog.Infof("No progress made, sleeping before retrying %d task(s)", len(errors))
 			time.Sleep(e.options.WaitAfterAllTasksFailed)
 		}
 	}
@@ -161,9 +171,7 @@ func (e *executor) RunTasks(taskMap map[string]Task) error {
 	return nil
 }
 
-type runnable func() error
-
-func (e *executor) forkJoin(tasks []*taskState) []error {
+func (e *executor[T]) forkJoin(tasks []*taskState[T]) []error {
 	if len(tasks) == 0 {
 		return nil
 	}
@@ -172,10 +180,18 @@ func (e *executor) forkJoin(tasks []*taskState) []error {
 	results := make([]error, len(tasks))
 	for i := 0; i < len(tasks); i++ {
 		wg.Add(1)
-		go func(ts *taskState, index int) {
+		go func(ts *taskState[T], index int) {
 			results[index] = fmt.Errorf("function panic")
 			defer wg.Done()
 			klog.V(2).Infof("Executing task %q: %v\n", ts.key, ts.task)
+
+			if taskNormalize, ok := ts.task.(TaskNormalize[T]); ok {
+				if err := taskNormalize.Normalize(e.context); err != nil {
+					results[index] = err
+					return
+				}
+			}
+
 			results[index] = ts.task.Run(e.context)
 		}(tasks[i], i)
 	}

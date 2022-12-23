@@ -1,5 +1,5 @@
 /*
-Copyright 2016 The Kubernetes Authors.
+Copyright 2019 The Kubernetes Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -19,7 +19,6 @@ package cmd
 import (
 	goflag "flag"
 	"fmt"
-
 	"io"
 
 	"github.com/spf13/cobra"
@@ -44,8 +43,10 @@ func NewCmdRoot(f Factory, out io.Writer) *cobra.Command {
 	options := &CmdRootOptions{}
 
 	cmd := &cobra.Command{
-		Use:   "channels",
-		Short: "channels applies software from a channel",
+		Use:           "channels",
+		Short:         "channels applies software from a channel",
+		SilenceErrors: true,
+		SilenceUsage:  true,
 	}
 
 	cmd.PersistentFlags().AddGoFlagSet(goflag.CommandLine)

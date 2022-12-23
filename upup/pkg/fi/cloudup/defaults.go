@@ -1,5 +1,5 @@
 /*
-Copyright 2016 The Kubernetes Authors.
+Copyright 2019 The Kubernetes Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -17,12 +17,16 @@ limitations under the License.
 package cloudup
 
 import (
+	"context"
 	"fmt"
 	"net"
 	"strings"
 
-	"k8s.io/klog"
+	"k8s.io/klog/v2"
 	"k8s.io/kops/pkg/apis/kops"
+	"k8s.io/kops/upup/pkg/fi"
+	"k8s.io/kops/upup/pkg/fi/cloudup/azure"
+	"k8s.io/kops/upup/pkg/fi/cloudup/gce"
 	"k8s.io/kops/util/pkg/vfs"
 
 	kopsversion "k8s.io/kops"
@@ -36,72 +40,92 @@ import (
 // PerformAssignments is called on create, as well as an update. In fact
 // any time Run() is called in apply_cluster.go we will reach this function.
 // Please do all after-market logic here.
-//
-func PerformAssignments(c *kops.Cluster) error {
-	cloud, err := BuildCloud(c)
-	if err != nil {
-		return err
-	}
+func PerformAssignments(c *kops.Cluster, cloud fi.Cloud) error {
+	ctx := context.TODO()
 
 	// Topology support
 	// TODO Kris: Unsure if this needs to be here, or if the API conversion code will handle it
-	if c.Spec.Topology == nil {
-		c.Spec.Topology = &kops.TopologySpec{Masters: kops.TopologyPublic, Nodes: kops.TopologyPublic}
+	if c.Spec.Networking.Topology == nil {
+		c.Spec.Networking.Topology = &kops.TopologySpec{ControlPlane: kops.TopologyPublic, Nodes: kops.TopologyPublic}
 	}
 
-	// Currently only AWS uses NetworkCIDRs
-	setNetworkCIDR := (cloud.ProviderID() == kops.CloudProviderAWS) || (cloud.ProviderID() == kops.CloudProviderALI)
-	if setNetworkCIDR && c.Spec.NetworkCIDR == "" {
+	if cloud == nil {
+		return fmt.Errorf("cloud cannot be nil")
+	}
+
+	if cloud.ProviderID() == kops.CloudProviderGCE {
+		if err := gce.PerformNetworkAssignments(ctx, c, cloud); err != nil {
+			return err
+		}
+	}
+
+	setNetworkCIDR := (cloud.ProviderID() == kops.CloudProviderAWS) || (cloud.ProviderID() == kops.CloudProviderAzure)
+	if setNetworkCIDR && c.Spec.Networking.NetworkCIDR == "" {
 		if c.SharedVPC() {
-			vpcInfo, err := cloud.FindVPCInfo(c.Spec.NetworkID)
-			if err != nil {
-				return err
+			var vpcInfo *fi.VPCInfo
+			var err error
+			if cloud.ProviderID() == kops.CloudProviderAzure {
+				if c.Spec.CloudProvider.Azure == nil || c.Spec.CloudProvider.Azure.ResourceGroupName == "" {
+					return fmt.Errorf("missing required --azure-resource-group-name when specifying Network ID")
+				}
+				vpcInfo, err = cloud.(azure.AzureCloud).FindVNetInfo(c.Spec.Networking.NetworkID, c.Spec.CloudProvider.Azure.ResourceGroupName)
+				if err != nil {
+					return err
+				}
+			} else {
+				vpcInfo, err = cloud.FindVPCInfo(c.Spec.Networking.NetworkID)
+				if err != nil {
+					return err
+				}
 			}
 			if vpcInfo == nil {
-				return fmt.Errorf("unable to find VPC ID %q", c.Spec.NetworkID)
+				return fmt.Errorf("unable to find Network ID %q", c.Spec.Networking.NetworkID)
 			}
-			c.Spec.NetworkCIDR = vpcInfo.CIDR
-			if c.Spec.NetworkCIDR == "" {
-				return fmt.Errorf("Unable to infer NetworkCIDR from VPC ID, please specify --network-cidr")
+			c.Spec.Networking.NetworkCIDR = vpcInfo.CIDR
+			if c.Spec.Networking.NetworkCIDR == "" {
+				return fmt.Errorf("unable to infer NetworkCIDR from Network ID, please specify --network-cidr")
 			}
 		} else {
 			if cloud.ProviderID() == kops.CloudProviderAWS {
 				// TODO: Choose non-overlapping networking CIDRs for VPCs, using vpcInfo
-				c.Spec.NetworkCIDR = "172.20.0.0/16"
-			} else if cloud.ProviderID() == kops.CloudProviderALI {
-				c.Spec.NetworkCIDR = "192.168.0.0/16"
+				c.Spec.Networking.NetworkCIDR = "172.20.0.0/16"
 			}
 		}
 
 		// Amazon VPC CNI uses the same network
-		if c.Spec.Networking != nil && c.Spec.Networking.AmazonVPC != nil {
-			c.Spec.NonMasqueradeCIDR = c.Spec.NetworkCIDR
+		if c.Spec.Networking.AmazonVPC != nil {
+			c.Spec.Networking.NonMasqueradeCIDR = c.Spec.Networking.NetworkCIDR
 		}
 	}
 
-	if c.Spec.NonMasqueradeCIDR == "" {
-		c.Spec.NonMasqueradeCIDR = "100.64.0.0/10"
+	if c.Spec.Networking.NonMasqueradeCIDR == "" {
+		if c.Spec.Networking.GCE != nil {
+			// Don't set NonMasqueradeCIDR
+		} else {
+			c.Spec.Networking.NonMasqueradeCIDR = "100.64.0.0/10"
+		}
 	}
 
 	// TODO: Unclear this should be here - it isn't too hard to change
-	if c.Spec.MasterPublicName == "" && c.ObjectMeta.Name != "" {
-		c.Spec.MasterPublicName = "api." + c.ObjectMeta.Name
+	if c.UsesPublicDNS() && c.Spec.API.PublicName == "" && c.ObjectMeta.Name != "" {
+		c.Spec.API.PublicName = "api." + c.ObjectMeta.Name
 	}
 
-	// We only assign subnet CIDRs on AWS
+	// We only assign subnet CIDRs on AWS, OpenStack, and Azure.
 	pd := cloud.ProviderID()
-	if pd == kops.CloudProviderAWS || pd == kops.CloudProviderOpenstack || pd == kops.CloudProviderALI {
+	if pd == kops.CloudProviderAWS || pd == kops.CloudProviderOpenstack || pd == kops.CloudProviderAzure {
 		// TODO: Use vpcInfo
-		err = assignCIDRsToSubnets(c)
+		err := assignCIDRsToSubnets(c, cloud)
 		if err != nil {
 			return err
 		}
 	}
 
-	c.Spec.EgressProxy, err = assignProxy(c)
+	proxy, err := assignProxy(c)
 	if err != nil {
 		return err
 	}
+	c.Spec.Networking.EgressProxy = proxy
 
 	return ensureKubernetesVersion(c)
 }
@@ -153,8 +177,7 @@ func FindLatestKubernetesVersion() (string, error) {
 }
 
 func assignProxy(cluster *kops.Cluster) (*kops.EgressProxySpec, error) {
-
-	egressProxy := cluster.Spec.EgressProxy
+	egressProxy := cluster.Spec.Networking.EgressProxy
 	// Add default no_proxy values if we are using a http proxy
 	if egressProxy != nil {
 
@@ -163,12 +186,12 @@ func assignProxy(cluster *kops.Cluster) (*kops.EgressProxySpec, error) {
 			egressSlice = strings.Split(egressProxy.ProxyExcludes, ",")
 		}
 
-		ip, _, err := net.ParseCIDR(cluster.Spec.NonMasqueradeCIDR)
+		ip, _, err := net.ParseCIDR(cluster.Spec.Networking.NonMasqueradeCIDR)
 		if err != nil {
 			return nil, fmt.Errorf("unable to parse Non Masquerade CIDR")
 		}
 
-		firstIP, err := incrementIP(ip, cluster.Spec.NonMasqueradeCIDR)
+		firstIP, err := incrementIP(ip, cluster.Spec.Networking.NonMasqueradeCIDR)
 		if err != nil {
 			return nil, fmt.Errorf("unable to get first ip address in Non Masquerade CIDR")
 		}
@@ -178,10 +201,10 @@ func assignProxy(cluster *kops.Cluster) (*kops.EgressProxySpec, error) {
 			"127.0.0.1",
 			"localhost",
 			cluster.Spec.ClusterDNSDomain, // TODO we may want this for public loadbalancers
-			cluster.Spec.MasterPublicName,
+			cluster.Spec.API.PublicName,
 			cluster.ObjectMeta.Name,
 			firstIP,
-			cluster.Spec.NonMasqueradeCIDR,
+			cluster.Spec.Networking.NonMasqueradeCIDR,
 		} {
 			if exclude == "" {
 				continue
@@ -193,15 +216,15 @@ func assignProxy(cluster *kops.Cluster) (*kops.EgressProxySpec, error) {
 
 		awsNoProxy := "169.254.169.254"
 
-		if cluster.Spec.CloudProvider == "aws" && !strings.Contains(cluster.Spec.EgressProxy.ProxyExcludes, awsNoProxy) {
+		if cluster.Spec.GetCloudProvider() == kops.CloudProviderAWS && !strings.Contains(cluster.Spec.Networking.EgressProxy.ProxyExcludes, awsNoProxy) {
 			egressSlice = append(egressSlice, awsNoProxy)
 		}
 
 		// the kube-apiserver will need to talk to kubelets on their node IP addresses port 10250
 		// for pod logs to be available via the api
-		if cluster.Spec.NetworkCIDR != "" {
-			if !strings.Contains(cluster.Spec.EgressProxy.ProxyExcludes, cluster.Spec.NetworkCIDR) {
-				egressSlice = append(egressSlice, cluster.Spec.NetworkCIDR)
+		if cluster.Spec.Networking.NetworkCIDR != "" {
+			if !strings.Contains(cluster.Spec.Networking.EgressProxy.ProxyExcludes, cluster.Spec.Networking.NetworkCIDR) {
+				egressSlice = append(egressSlice, cluster.Spec.Networking.NetworkCIDR)
 			}
 		} else {
 			klog.Warningf("No NetworkCIDR defined (yet), not adding to egressProxy.excludes")

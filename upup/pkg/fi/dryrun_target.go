@@ -1,5 +1,5 @@
 /*
-Copyright 2016 The Kubernetes Authors.
+Copyright 2019 The Kubernetes Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -25,7 +25,7 @@ import (
 	"strings"
 	"sync"
 
-	"k8s.io/klog"
+	"k8s.io/klog/v2"
 	"k8s.io/kops/pkg/assets"
 	"k8s.io/kops/pkg/diff"
 	"k8s.io/kops/util/pkg/reflectutils"
@@ -34,11 +34,11 @@ import (
 // DryRunTarget is a special Target that does not execute anything, but instead tracks all changes.
 // By running against a DryRunTarget, a list of changes that would be made can be easily collected,
 // without any special support from the Tasks.
-type DryRunTarget struct {
+type DryRunTarget[T SubContext] struct {
 	mutex sync.Mutex
 
-	changes   []*render
-	deletions []Deletion
+	changes   []*render[T]
+	deletions []Deletion[T]
 
 	// The destination to which the final report will be printed on Finish()
 	out io.Writer
@@ -47,53 +47,68 @@ type DryRunTarget struct {
 	assetBuilder *assets.AssetBuilder
 }
 
-type render struct {
-	a       Task
+type NodeupDryRunTarget = DryRunTarget[NodeupSubContext]
+type CloudupDryRunTarget = DryRunTarget[CloudupSubContext]
+
+type render[T SubContext] struct {
+	a       Task[T]
 	aIsNil  bool
-	e       Task
-	changes Task
+	e       Task[T]
+	changes Task[T]
 }
 
 // ByTaskKey sorts []*render by TaskKey (type/name)
-type ByTaskKey []*render
+type ByTaskKey[T SubContext] []*render[T]
 
-func (a ByTaskKey) Len() int      { return len(a) }
-func (a ByTaskKey) Swap(i, j int) { a[i], a[j] = a[j], a[i] }
-func (a ByTaskKey) Less(i, j int) bool {
+func (a ByTaskKey[T]) Len() int      { return len(a) }
+func (a ByTaskKey[T]) Swap(i, j int) { a[i], a[j] = a[j], a[i] }
+func (a ByTaskKey[T]) Less(i, j int) bool {
 	return buildTaskKey(a[i].e) < buildTaskKey(a[j].e)
 }
 
 // DeletionByTaskName sorts []Deletion by TaskName
-type DeletionByTaskName []Deletion
+type DeletionByTaskName[T SubContext] []Deletion[T]
 
-func (a DeletionByTaskName) Len() int      { return len(a) }
-func (a DeletionByTaskName) Swap(i, j int) { a[i], a[j] = a[j], a[i] }
-func (a DeletionByTaskName) Less(i, j int) bool {
-	return a[i].TaskName() < a[i].TaskName()
+func (a DeletionByTaskName[T]) Len() int      { return len(a) }
+func (a DeletionByTaskName[T]) Swap(i, j int) { a[i], a[j] = a[j], a[i] }
+func (a DeletionByTaskName[T]) Less(i, j int) bool {
+	return a[i].TaskName() < a[j].TaskName()
 }
 
-var _ Target = &DryRunTarget{}
+var _ Target[CloudupSubContext] = &DryRunTarget[CloudupSubContext]{}
 
-func NewDryRunTarget(assetBuilder *assets.AssetBuilder, out io.Writer) *DryRunTarget {
-	t := &DryRunTarget{}
+func newDryRunTarget[T SubContext](assetBuilder *assets.AssetBuilder, out io.Writer) *DryRunTarget[T] {
+	t := &DryRunTarget[T]{}
 	t.out = out
 	t.assetBuilder = assetBuilder
 	return t
 }
 
-func (t *DryRunTarget) ProcessDeletions() bool {
+func NewCloudupDryRunTarget(assetBuilder *assets.AssetBuilder, out io.Writer) *CloudupDryRunTarget {
+	return newDryRunTarget[CloudupSubContext](assetBuilder, out)
+}
+
+func NewNodeupDryRunTarget(assetBuilder *assets.AssetBuilder, out io.Writer) *NodeupDryRunTarget {
+	return newDryRunTarget[NodeupSubContext](assetBuilder, out)
+}
+
+func (t *DryRunTarget[T]) ProcessDeletions() bool {
 	// We display deletions
 	return true
 }
 
-func (t *DryRunTarget) Render(a, e, changes Task) error {
+func (t *DryRunTarget[T]) DefaultCheckExisting() bool {
+	return true
+}
+
+func (t *DryRunTarget[T]) Render(a, e, changes Task[T]) error {
 	valA := reflect.ValueOf(a)
 	aIsNil := valA.IsNil()
 
 	t.mutex.Lock()
 	defer t.mutex.Unlock()
 
-	t.changes = append(t.changes, &render{
+	t.changes = append(t.changes, &render[T]{
 		a:       a,
 		aIsNil:  aIsNil,
 		e:       e,
@@ -102,7 +117,7 @@ func (t *DryRunTarget) Render(a, e, changes Task) error {
 	return nil
 }
 
-func (t *DryRunTarget) Delete(deletion Deletion) error {
+func (t *DryRunTarget[T]) Delete(deletion Deletion[T]) error {
 	t.mutex.Lock()
 	defer t.mutex.Unlock()
 
@@ -111,7 +126,7 @@ func (t *DryRunTarget) Delete(deletion Deletion) error {
 	return nil
 }
 
-func idForTask(taskMap map[string]Task, t Task) string {
+func idForTask[T SubContext](taskMap map[string]Task[T], t Task[T]) string {
 	for k, v := range taskMap {
 		if v == t {
 			// Skip task type, if present (taskType/taskName)
@@ -126,12 +141,12 @@ func idForTask(taskMap map[string]Task, t Task) string {
 	return "?"
 }
 
-func (t *DryRunTarget) PrintReport(taskMap map[string]Task, out io.Writer) error {
+func (t *DryRunTarget[T]) PrintReport(taskMap map[string]Task[T], out io.Writer) error {
 	b := &bytes.Buffer{}
 
 	if len(t.changes) != 0 {
-		var creates []*render
-		var updates []*render
+		var creates []*render[T]
+		var updates []*render[T]
 
 		for _, r := range t.changes {
 			if r.aIsNil {
@@ -142,8 +157,8 @@ func (t *DryRunTarget) PrintReport(taskMap map[string]Task, out io.Writer) error
 		}
 
 		// Give everything a consistent ordering
-		sort.Sort(ByTaskKey(creates))
-		sort.Sort(ByTaskKey(updates))
+		sort.Sort(ByTaskKey[T](creates))
+		sort.Sort(ByTaskKey[T](updates))
 
 		if len(creates) != 0 {
 			fmt.Fprintf(b, "Will create resources:\n")
@@ -188,7 +203,7 @@ func (t *DryRunTarget) PrintReport(taskMap map[string]Task, out io.Writer) error
 							if field.CanInterface() {
 								hasName, ok := field.Interface().(HasName)
 								if ok {
-									name = StringValue(hasName.GetName())
+									name = ValueOf(hasName.GetName())
 								}
 							}
 							if name != "" {
@@ -222,6 +237,7 @@ func (t *DryRunTarget) PrintReport(taskMap map[string]Task, out io.Writer) error
 					fmt.Fprintf(b, "   internal consistency error!\n")
 					fmt.Fprintf(b, "    actual: %+v\n", r.a)
 					fmt.Fprintf(b, "    expect: %+v\n", r.e)
+					fmt.Fprintf(b, "    change: %+v\n", r.changes)
 					continue
 				}
 
@@ -243,7 +259,7 @@ func (t *DryRunTarget) PrintReport(taskMap map[string]Task, out io.Writer) error
 
 	if len(t.deletions) != 0 {
 		// Give everything a consistent ordering
-		sort.Sort(DeletionByTaskName(t.deletions))
+		sort.Sort(DeletionByTaskName[T](t.deletions))
 
 		fmt.Fprintf(b, "Will delete items:\n")
 		for _, d := range t.deletions {
@@ -251,20 +267,18 @@ func (t *DryRunTarget) PrintReport(taskMap map[string]Task, out io.Writer) error
 		}
 	}
 
-	if len(t.assetBuilder.ContainerAssets) != 0 {
-		klog.V(4).Infof("ContainerAssets:")
-		for _, a := range t.assetBuilder.ContainerAssets {
-			klog.V(4).Infof("  %s %s", a.DockerImage, a.CanonicalLocation)
+	if len(t.assetBuilder.ImageAssets) != 0 {
+		klog.V(4).Infof("ImageAssets:")
+		for _, a := range t.assetBuilder.ImageAssets {
+			klog.V(4).Infof("  %s %s", a.DownloadLocation, a.CanonicalLocation)
 		}
 	}
 
 	if len(t.assetBuilder.FileAssets) != 0 {
 		klog.V(4).Infof("FileAssets:")
 		for _, a := range t.assetBuilder.FileAssets {
-			if a.DownloadURL != nil && a.CanonicalURL != nil {
+			if a.DownloadURL != nil {
 				klog.V(4).Infof("  %s %s", a.DownloadURL.String(), a.CanonicalURL.String())
-			} else if a.DownloadURL != nil {
-				klog.V(4).Infof("  %s", a.DownloadURL.String())
 			}
 		}
 	}
@@ -278,7 +292,7 @@ type change struct {
 	Description string
 }
 
-func buildChangeList(a, e, changes Task) ([]change, error) {
+func buildChangeList[T SubContext](a, e, changes Task[T]) ([]change, error) {
 	var changeList []change
 
 	valC := reflect.ValueOf(changes)
@@ -301,35 +315,32 @@ func buildChangeList(a, e, changes Task) ([]change, error) {
 			}
 
 			fieldValC := valC.Field(i)
+			fieldValE := valE.Field(i)
+			fieldValA := valA.Field(i)
 
 			changed := true
 			switch fieldValC.Kind() {
 			case reflect.Ptr, reflect.Interface, reflect.Slice, reflect.Map:
 				changed = !fieldValC.IsNil()
+				if fieldValC.IsNil() && !fieldValA.IsNil() && fieldValE.IsNil() {
+					changed = true
+				}
 
 			case reflect.String:
-				changed = fieldValC.Interface().(string) != ""
+				changed = fieldValC.Convert(reflect.TypeOf("")).Interface() != ""
 			}
 			if !changed {
 				continue
 			}
 
-			if fieldValC.Kind() == reflect.String && fieldValC.Interface().(string) == "" {
-				// No change
-				continue
-			}
-
-			fieldValE := valE.Field(i)
-
 			description := ""
 			ignored := false
 			if fieldValE.CanInterface() {
-				fieldValA := valA.Field(i)
 
 				switch fieldValE.Interface().(type) {
-				//case SimpleUnit:
+				// case SimpleUnit:
 				//	ignored = true
-				case Resource, ResourceHolder:
+				case Resource:
 					resA, okA := tryResourceAsString(fieldValA)
 					resE, okE := tryResourceAsString(fieldValE)
 					if okA && okE {
@@ -378,18 +389,10 @@ func tryResourceAsString(v reflect.Value) (string, bool) {
 		}
 		return s, true
 	}
-	if res, ok := intf.(*ResourceHolder); ok {
-		s, err := res.AsString()
-		if err != nil {
-			klog.Warningf("error converting to resource: %v", err)
-			return "", false
-		}
-		return s, true
-	}
 	return "", false
 }
 
-func getTaskName(t Task) string {
+func getTaskName[T SubContext](t Task[T]) string {
 	s := fmt.Sprintf("%T", t)
 	lastDot := strings.LastIndexByte(s, '.')
 	if lastDot != -1 {
@@ -399,12 +402,12 @@ func getTaskName(t Task) string {
 }
 
 // Finish is called at the end of a run, and prints a list of changes to the configured Writer
-func (t *DryRunTarget) Finish(taskMap map[string]Task) error {
+func (t *DryRunTarget[T]) Finish(taskMap map[string]Task[T]) error {
 	return t.PrintReport(taskMap, t.out)
 }
 
 // Deletions returns all task names which is going to be deleted
-func (t *DryRunTarget) Deletions() []string {
+func (t *DryRunTarget[T]) Deletions() []string {
 	var deletions []string
 	for _, d := range t.deletions {
 		deletions = append(deletions, d.TaskName())
@@ -413,9 +416,9 @@ func (t *DryRunTarget) Deletions() []string {
 }
 
 // Changes returns tasks which is going to be created or updated
-func (t *DryRunTarget) Changes() (map[string]Task, map[string]Task) {
-	creates := make(map[string]Task)
-	updates := make(map[string]Task)
+func (t *DryRunTarget[T]) Changes() (map[string]Task[T], map[string]Task[T]) {
+	creates := make(map[string]Task[T])
+	updates := make(map[string]Task[T])
 	for _, r := range t.changes {
 		if r.aIsNil {
 			creates[getTaskName(r.changes)] = r.changes
@@ -427,6 +430,6 @@ func (t *DryRunTarget) Changes() (map[string]Task, map[string]Task) {
 }
 
 // HasChanges returns true iff any changes would have been made
-func (t *DryRunTarget) HasChanges() bool {
+func (t *DryRunTarget[T]) HasChanges() bool {
 	return len(t.changes)+len(t.deletions) != 0
 }

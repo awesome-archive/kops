@@ -1,5 +1,5 @@
 /*
-Copyright 2018 The Kubernetes Authors.
+Copyright 2019 The Kubernetes Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -26,61 +26,87 @@ import (
 // NetworkModelBuilder configures network objects
 type NetworkModelBuilder struct {
 	*OpenstackModelContext
-	Lifecycle *fi.Lifecycle
+	Lifecycle fi.Lifecycle
 }
 
-var _ fi.ModelBuilder = &NetworkModelBuilder{}
+var _ fi.CloudupModelBuilder = &NetworkModelBuilder{}
 
-func (b *NetworkModelBuilder) Build(c *fi.ModelBuilderContext) error {
+func (b *NetworkModelBuilder) Build(c *fi.CloudupModelBuilderContext) error {
 	clusterName := b.ClusterName()
-	routerName := strings.Replace(clusterName, ".", "-", -1)
 
+	osSpec := b.Cluster.Spec.CloudProvider.Openstack
+
+	netName, err := b.GetNetworkName()
+	if err != nil {
+		return err
+	}
 	{
 		t := &openstacktasks.Network{
-			Name:      s(clusterName),
-			ID:        s(b.Cluster.Spec.NetworkID),
+			Name:      s(netName),
+			ID:        s(b.Cluster.Spec.Networking.NetworkID),
+			Tag:       s(clusterName),
 			Lifecycle: b.Lifecycle,
 		}
-
+		if osSpec.Network != nil {
+			t.AvailabilityZoneHints = osSpec.Network.AvailabilityZoneHints
+		}
 		c.AddTask(t)
 	}
 
-	{
-		t := &openstacktasks.Router{
-			Name:      s(routerName),
-			Lifecycle: b.Lifecycle,
-		}
-
-		c.AddTask(t)
+	needRouter := true
+	// Do not need router if there is no external network
+	if osSpec.Router == nil || osSpec.Router.ExternalNetwork == nil {
+		needRouter = false
 	}
-
-	for _, sp := range b.Cluster.Spec.Subnets {
-		subnetName := sp.Name + "." + b.ClusterName()
+	routerName := strings.Replace(clusterName, ".", "-", -1)
+	for _, sp := range b.Cluster.Spec.Networking.Subnets {
+		// assumes that we do not need to create routers if we use existing subnets
+		if sp.ID != "" {
+			needRouter = false
+		}
+		subnetName, err := b.findSubnetNameByID(sp.ID, sp.Name)
+		if err != nil {
+			return err
+		}
 		t := &openstacktasks.Subnet{
 			Name:       s(subnetName),
 			Network:    b.LinkToNetwork(),
 			CIDR:       s(sp.CIDR),
 			DNSServers: make([]*string, 0),
 			Lifecycle:  b.Lifecycle,
+			Tag:        s(clusterName),
 		}
-		if b.Cluster.Spec.CloudConfig.Openstack.Router.DNSServers != nil {
-			dnsSplitted := strings.Split(fi.StringValue(b.Cluster.Spec.CloudConfig.Openstack.Router.DNSServers), ",")
+		if osSpec.Router != nil && osSpec.Router.DNSServers != nil {
+			dnsSplitted := strings.Split(fi.ValueOf(osSpec.Router.DNSServers), ",")
 			dnsNameSrv := make([]*string, len(dnsSplitted))
 			for i, ns := range dnsSplitted {
-				dnsNameSrv[i] = fi.String(ns)
+				dnsNameSrv[i] = fi.PtrTo(ns)
 			}
 			t.DNSServers = dnsNameSrv
 		}
 		c.AddTask(t)
 
-		t1 := &openstacktasks.RouterInterface{
-			Name:      s("ri-" + sp.Name),
-			Subnet:    b.LinkToSubnet(s(subnetName)),
-			Router:    b.LinkToRouter(s(routerName)),
-			Lifecycle: b.Lifecycle,
+		if needRouter {
+			t1 := &openstacktasks.RouterInterface{
+				Name:      s("ri-" + sp.Name),
+				Subnet:    b.LinkToSubnet(s(subnetName)),
+				Router:    b.LinkToRouter(s(routerName)),
+				Lifecycle: b.Lifecycle,
+			}
+			c.AddTask(t1)
 		}
-		c.AddTask(t1)
 	}
 
+	if needRouter {
+		t := &openstacktasks.Router{
+			Name:      s(routerName),
+			Lifecycle: b.Lifecycle,
+		}
+		if osSpec.Router != nil {
+			t.AvailabilityZoneHints = osSpec.Router.AvailabilityZoneHints
+		}
+
+		c.AddTask(t)
+	}
 	return nil
 }

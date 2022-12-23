@@ -1,5 +1,5 @@
 /*
-Copyright 2016 The Kubernetes Authors.
+Copyright 2019 The Kubernetes Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -17,10 +17,12 @@ limitations under the License.
 package domodel
 
 import (
+	"strconv"
 	"strings"
 
 	"k8s.io/kops/pkg/model"
 	"k8s.io/kops/upup/pkg/fi"
+	"k8s.io/kops/upup/pkg/fi/cloudup/do"
 	"k8s.io/kops/upup/pkg/fi/cloudup/dotasks"
 )
 
@@ -28,13 +30,13 @@ import (
 type DropletBuilder struct {
 	*DOModelContext
 
-	BootstrapScript *model.BootstrapScript
-	Lifecycle       *fi.Lifecycle
+	BootstrapScriptBuilder *model.BootstrapScriptBuilder
+	Lifecycle              fi.Lifecycle
 }
 
-var _ fi.ModelBuilder = &DropletBuilder{}
+var _ fi.CloudupModelBuilder = &DropletBuilder{}
 
-func (d *DropletBuilder) Build(c *fi.ModelBuilderContext) error {
+func (d *DropletBuilder) Build(c *fi.CloudupModelBuilderContext) error {
 	sshKeyName, err := d.SSHKeyName()
 	if err != nil {
 		return err
@@ -44,26 +46,52 @@ func (d *DropletBuilder) Build(c *fi.ModelBuilderContext) error {
 	sshKeyFingerPrint := splitSSHKeyName[len(splitSSHKeyName)-1]
 
 	// replace "." with "-" since DO API does not accept "."
-	clusterTag := "KubernetesCluster:" + strings.Replace(d.ClusterName(), ".", "-", -1)
+	clusterName := do.SafeClusterName(d.ClusterName())
+	clusterTag := do.TagKubernetesClusterNamePrefix + ":" + clusterName
+	clusterMasterTag := do.TagKubernetesClusterMasterPrefix + ":" + clusterName
 
+	masterIndexCount := 0
 	// In the future, DigitalOcean will use Machine API to manage groups,
 	// for now create d.InstanceGroups.Spec.MinSize amount of droplets
 	for _, ig := range d.InstanceGroups {
 		name := d.AutoscalingGroupName(ig)
 
-		var droplet dotasks.Droplet
-		droplet.Count = int(fi.Int32Value(ig.Spec.MinSize))
-		droplet.Name = fi.String(name)
+		droplet := dotasks.Droplet{
+			Count:     int(fi.ValueOf(ig.Spec.MinSize)),
+			Name:      fi.PtrTo(name),
+			Lifecycle: d.Lifecycle,
 
-		// during alpha support we only allow 1 region
-		// validation for only 1 region is done at this point
-		droplet.Region = fi.String(d.Cluster.Spec.Subnets[0].Region)
-		droplet.Size = fi.String(ig.Spec.MachineType)
-		droplet.Image = fi.String(ig.Spec.Image)
-		droplet.SSHKey = fi.String(sshKeyFingerPrint)
-		droplet.Tags = []string{clusterTag}
+			// kops do supports allow only 1 region
+			Region: fi.PtrTo(d.Cluster.Spec.Networking.Subnets[0].Region),
+			Size:   fi.PtrTo(ig.Spec.MachineType),
+			Image:  fi.PtrTo(ig.Spec.Image),
+			SSHKey: fi.PtrTo(sshKeyFingerPrint),
+			Tags:   []string{clusterTag},
+		}
 
-		userData, err := d.BootstrapScript.ResourceNodeUp(ig, d.Cluster)
+		if ig.IsControlPlane() {
+			masterIndexCount++
+			// create tag based on etcd name. etcd name is now prefixed with etcd-
+			// Ref: https://github.com/kubernetes/kops/commit/31f8cbd571964f19d3c31024ddba918998d29929
+			clusterTagIndex := do.TagKubernetesClusterIndex + ":" + "etcd-" + strconv.Itoa(masterIndexCount)
+			droplet.Tags = append(droplet.Tags, clusterTagIndex)
+			droplet.Tags = append(droplet.Tags, clusterMasterTag)
+			droplet.Tags = append(droplet.Tags, do.TagKubernetesInstanceGroup+":"+ig.Name)
+		} else {
+			droplet.Tags = append(droplet.Tags, do.TagKubernetesInstanceGroup+":"+ig.Name)
+		}
+
+		if d.Cluster.Spec.Networking.NetworkID != "" {
+			droplet.VPCUUID = fi.PtrTo(d.Cluster.Spec.Networking.NetworkID)
+		} else if d.Cluster.Spec.Networking.NetworkCIDR != "" {
+			// since networkCIDR specified as part of the request, it is made sure that vpc with this cidr exist before
+			// creating the droplet, so you can associate with vpc uuid for this droplet.
+			vpcName := "vpc-" + clusterName
+			droplet.VPCName = fi.PtrTo(vpcName)
+			droplet.NetworkCIDR = fi.PtrTo(d.Cluster.Spec.Networking.NetworkCIDR)
+		}
+
+		userData, err := d.BootstrapScriptBuilder.ResourceNodeUp(c, ig)
 		if err != nil {
 			return err
 		}

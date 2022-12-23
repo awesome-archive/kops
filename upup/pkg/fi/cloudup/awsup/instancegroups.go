@@ -1,5 +1,5 @@
 /*
-Copyright 2016 The Kubernetes Authors.
+Copyright 2019 The Kubernetes Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -19,7 +19,7 @@ package awsup
 import (
 	"fmt"
 
-	"k8s.io/klog"
+	"k8s.io/klog/v2"
 	"k8s.io/kops/pkg/apis/kops"
 )
 
@@ -29,8 +29,10 @@ func matchInstanceGroup(name string, clusterName string, instancegroups []*kops.
 	for _, g := range instancegroups {
 		var groupName string
 		switch g.Spec.Role {
-		case kops.InstanceGroupRoleMaster:
+		case kops.InstanceGroupRoleControlPlane:
 			groupName = g.ObjectMeta.Name + ".masters." + clusterName
+		case kops.InstanceGroupRoleAPIServer:
+			groupName = g.ObjectMeta.Name + ".apiservers." + clusterName
 		case kops.InstanceGroupRoleNode:
 			groupName = g.ObjectMeta.Name + "." + clusterName
 		case kops.InstanceGroupRoleBastion:

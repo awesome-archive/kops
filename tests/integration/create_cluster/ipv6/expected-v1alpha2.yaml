@@ -1,0 +1,110 @@
+apiVersion: kops.k8s.io/v1alpha2
+kind: Cluster
+metadata:
+  creationTimestamp: "2017-01-01T00:00:00Z"
+  name: ipv6.example.com
+spec:
+  api:
+    loadBalancer:
+      class: Network
+      type: Public
+  authorization:
+    rbac: {}
+  channel: stable
+  cloudControllerManager: {}
+  cloudProvider: aws
+  configBase: memfs://tests/ipv6.example.com
+  etcdClusters:
+  - cpuRequest: 200m
+    etcdMembers:
+    - encryptedVolume: true
+      instanceGroup: control-plane-us-test-1a
+      name: a
+    memoryRequest: 100Mi
+    name: main
+  - cpuRequest: 100m
+    etcdMembers:
+    - encryptedVolume: true
+      instanceGroup: control-plane-us-test-1a
+      name: a
+    memoryRequest: 100Mi
+    name: events
+  iam:
+    allowContainerRegistry: true
+    legacy: false
+  kubelet:
+    anonymousAuth: false
+  kubernetesApiAccess:
+  - 0.0.0.0/0
+  - ::/0
+  kubernetesVersion: v1.22.0
+  masterPublicName: api.ipv6.example.com
+  networkCIDR: 172.20.0.0/16
+  networking:
+    calico: {}
+  nonMasqueradeCIDR: ::/0
+  sshAccess:
+  - 0.0.0.0/0
+  - ::/0
+  subnets:
+  - ipv6CIDR: /64#0
+    name: us-test-1a
+    type: Private
+    zone: us-test-1a
+  - cidr: 172.20.32.0/19
+    ipv6CIDR: /64#1
+    name: dualstack-us-test-1a
+    type: DualStack
+    zone: us-test-1a
+  - cidr: 172.20.0.0/22
+    ipv6CIDR: /64#2
+    name: utility-us-test-1a
+    type: Utility
+    zone: us-test-1a
+  topology:
+    dns:
+      type: Public
+    masters: private
+    nodes: private
+
+---
+
+apiVersion: kops.k8s.io/v1alpha2
+kind: InstanceGroup
+metadata:
+  creationTimestamp: "2017-01-01T00:00:00Z"
+  labels:
+    kops.k8s.io/cluster: ipv6.example.com
+  name: control-plane-us-test-1a
+spec:
+  image: 099720109477/ubuntu/images/hvm-ssd/ubuntu-focal-20.04-amd64-server-20221206
+  instanceMetadata:
+    httpPutResponseHopLimit: 3
+    httpTokens: required
+  machineType: m3.medium
+  maxSize: 1
+  minSize: 1
+  role: Master
+  subnets:
+  - dualstack-us-test-1a
+
+---
+
+apiVersion: kops.k8s.io/v1alpha2
+kind: InstanceGroup
+metadata:
+  creationTimestamp: "2017-01-01T00:00:00Z"
+  labels:
+    kops.k8s.io/cluster: ipv6.example.com
+  name: nodes-us-test-1a
+spec:
+  image: 099720109477/ubuntu/images/hvm-ssd/ubuntu-focal-20.04-amd64-server-20221206
+  instanceMetadata:
+    httpPutResponseHopLimit: 1
+    httpTokens: required
+  machineType: t2.medium
+  maxSize: 1
+  minSize: 1
+  role: Node
+  subnets:
+  - us-test-1a

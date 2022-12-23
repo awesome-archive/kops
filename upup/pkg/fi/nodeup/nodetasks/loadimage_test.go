@@ -1,5 +1,5 @@
 /*
-Copyright 2016 The Kubernetes Authors.
+Copyright 2019 The Kubernetes Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -26,16 +26,15 @@ import (
 func TestLoadImageTask_Deps(t *testing.T) {
 	l := &LoadImageTask{}
 
-	tasks := make(map[string]fi.Task)
+	tasks := make(map[string]fi.NodeupTask)
 	tasks["LoadImageTask1"] = &LoadImageTask{}
 	tasks["FileTask1"] = &File{}
 	tasks["ServiceDocker"] = &Service{Name: "docker.service"}
 	tasks["Service2"] = &Service{Name: "two.service"}
 
 	deps := l.GetDependencies(tasks)
-	expected := []fi.Task{tasks["ServiceDocker"]}
+	expected := []fi.NodeupTask{tasks["ServiceDocker"]}
 	if !reflect.DeepEqual(expected, deps) {
 		t.Fatalf("unexpected deps.  expected=%v, actual=%v", expected, deps)
 	}
-
 }

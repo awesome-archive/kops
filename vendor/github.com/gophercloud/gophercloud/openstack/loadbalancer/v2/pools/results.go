@@ -15,15 +15,20 @@ import (
 // types of persistence are supported:
 //
 // SOURCE_IP:   With this mode, all connections originating from the same source
-//              IP address, will be handled by the same Member of the Pool.
+//
+//	IP address, will be handled by the same Member of the Pool.
+//
 // HTTP_COOKIE: With this persistence mode, the load balancing function will
-//              create a cookie on the first request from a client. Subsequent
-//              requests containing the same cookie value will be handled by
-//              the same Member of the Pool.
+//
+//	create a cookie on the first request from a client. Subsequent
+//	requests containing the same cookie value will be handled by
+//	the same Member of the Pool.
+//
 // APP_COOKIE:  With this persistence mode, the load balancing function will
-//              rely on a cookie established by the backend application. All
-//              requests carrying the same cookie value will be handled by the
-//              same Member of the Pool.
+//
+//	rely on a cookie established by the backend application. All
+//	requests carrying the same cookie value will be handled by the
+//	same Member of the Pool.
 type SessionPersistence struct {
 	// The type of persistence mode.
 	Type string `json:"type"`
@@ -102,6 +107,10 @@ type Pool struct {
 
 	// The operating status of the pool.
 	OperatingStatus string `json:"operating_status"`
+
+	// Tags is a list of resource tags. Tags are arbitrarily defined strings
+	// attached to the resource. New in version 2.5
+	Tags []string `json:"tags"`
 }
 
 // PoolPage is the page returned by a pager when traversing over a
@@ -228,6 +237,10 @@ type Member struct {
 
 	// An alternate protocol port used for health monitoring a backend member.
 	MonitorPort int `json:"monitor_port"`
+
+	// A list of simple strings assigned to the resource.
+	// Requires microversion 2.5 or later.
+	Tags []string `json:"tags"`
 }
 
 // MemberPage is the page returned by a pager when traversing over a

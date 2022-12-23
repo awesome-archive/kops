@@ -1,5 +1,5 @@
 /*
-Copyright 2016 The Kubernetes Authors.
+Copyright 2019 The Kubernetes Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -24,7 +24,7 @@ import (
 	"sort"
 	"text/tabwriter"
 
-	"k8s.io/klog"
+	"k8s.io/klog/v2"
 
 	"k8s.io/kops/util/pkg/reflectutils"
 )
@@ -47,8 +47,6 @@ func (c *TableColumn) getFromValue(v reflect.Value) string {
 
 	return reflectutils.ValueAsString(fv)
 }
-
-type getterFunction func(interface{}) string
 
 // AddColumn registers an available column for formatting
 func (t *Table) AddColumn(name string, getter interface{}) {
@@ -73,9 +71,11 @@ type funcSorter struct {
 func (f *funcSorter) Len() int {
 	return f.len
 }
+
 func (f *funcSorter) Less(i, j int) bool {
 	return f.less(i, j)
 }
+
 func (f *funcSorter) Swap(i, j int) {
 	f.swap(i, j)
 }

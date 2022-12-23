@@ -1,5 +1,5 @@
 /*
-Copyright 2016 The Kubernetes Authors.
+Copyright 2019 The Kubernetes Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -18,36 +18,42 @@ package nodetasks
 
 import (
 	"fmt"
+	"os"
 	"os/exec"
 	"path"
+	"path/filepath"
 	"strings"
 
-	"k8s.io/klog"
+	"k8s.io/klog/v2"
 	"k8s.io/kops/pkg/backoff"
 	"k8s.io/kops/upup/pkg/fi"
-	"k8s.io/kops/upup/pkg/fi/nodeup/cloudinit"
 	"k8s.io/kops/upup/pkg/fi/nodeup/local"
 	"k8s.io/kops/upup/pkg/fi/utils"
 	"k8s.io/kops/util/pkg/hashing"
 )
 
-const dockerService = "docker.service"
-
 // LoadImageTask is responsible for downloading a docker image
 type LoadImageTask struct {
+	Name    string
 	Sources []string
 	Hash    string
+	Runtime string
 }
 
-var _ fi.Task = &LoadImageTask{}
-var _ fi.HasDependencies = &LoadImageTask{}
+var (
+	_ fi.NodeupTask            = &LoadImageTask{}
+	_ fi.NodeupHasDependencies = &LoadImageTask{}
+)
 
-func (t *LoadImageTask) GetDependencies(tasks map[string]fi.Task) []fi.Task {
+func (t *LoadImageTask) GetDependencies(tasks map[string]fi.NodeupTask) []fi.NodeupTask {
 	// LoadImageTask depends on the docker service to ensure we
 	// sideload images after docker is completely updated and
 	// configured.
-	var deps []fi.Task
+	var deps []fi.NodeupTask
 	for _, v := range tasks {
+		if svc, ok := v.(*Service); ok && svc.Name == containerdService {
+			deps = append(deps, v)
+		}
 		if svc, ok := v.(*Service); ok && svc.Name == dockerService {
 			deps = append(deps, v)
 		}
@@ -55,17 +61,26 @@ func (t *LoadImageTask) GetDependencies(tasks map[string]fi.Task) []fi.Task {
 	return deps
 }
 
+var _ fi.HasName = &LoadImageTask{}
+
+func (t *LoadImageTask) GetName() *string {
+	if t.Name == "" {
+		return nil
+	}
+	return &t.Name
+}
+
 func (t *LoadImageTask) String() string {
 	return fmt.Sprintf("LoadImageTask: %v", t.Sources)
 }
 
-func (e *LoadImageTask) Find(c *fi.Context) (*LoadImageTask, error) {
+func (e *LoadImageTask) Find(c *fi.NodeupContext) (*LoadImageTask, error) {
 	klog.Warningf("LoadImageTask checking if image present not yet implemented")
 	return nil, nil
 }
 
-func (e *LoadImageTask) Run(c *fi.Context) error {
-	return fi.DefaultDeltaRunMethod(e, c)
+func (e *LoadImageTask) Run(c *fi.NodeupContext) error {
+	return fi.NodeupDefaultDeltaRunMethod(e, c)
 }
 
 func (_ *LoadImageTask) CheckChanges(a, e, changes *LoadImageTask) error {
@@ -73,6 +88,11 @@ func (_ *LoadImageTask) CheckChanges(a, e, changes *LoadImageTask) error {
 }
 
 func (_ *LoadImageTask) RenderLocal(t *local.LocalTarget, a, e, changes *LoadImageTask) error {
+	runtime := e.Runtime
+	if runtime != "docker" && runtime != "containerd" {
+		return fmt.Errorf("no runtime specified")
+	}
+
 	hash, err := hashing.FromString(e.Hash)
 	if err != nil {
 		return err
@@ -83,9 +103,10 @@ func (_ *LoadImageTask) RenderLocal(t *local.LocalTarget, a, e, changes *LoadIma
 		return fmt.Errorf("no sources specified: %v", err)
 	}
 
-	// We assume the first url is the "main" url, and download to that _name_, wherever we get it from
+	// We assume the first url is the "main" url, and download to a local file based on that _name_, wherever we get it from
 	primaryURL := urls[0]
-	localFile := path.Join(t.CacheDir, hash.String()+"_"+utils.SanitizeString(primaryURL))
+	key := path.Base(primaryURL)
+	localFile := filepath.Join(t.CacheDir, hash.String()+"_"+utils.SanitizeString(key))
 
 	for _, url := range urls {
 		_, err = fi.DownloadURL(url, localFile, hash)
@@ -102,8 +123,39 @@ func (_ *LoadImageTask) RenderLocal(t *local.LocalTarget, a, e, changes *LoadIma
 		return err
 	}
 
-	// Load the image into docker
-	args := []string{"docker", "load", "-i", localFile}
+	// containerd can't import gzipped container images, if the image is gzipped extract it to tmp dir
+	// TODO: Improve the naive gzip format detection by checking the content type bytes "\x1F\x8B\x08"
+	var tarFile string
+	if strings.HasSuffix(localFile, "gz") {
+		tmpDir, err := os.MkdirTemp("", "loadimage")
+		if err != nil {
+			return fmt.Errorf("error creating temp dir: %v", err)
+		}
+		defer func() {
+			if err := os.RemoveAll(tmpDir); err != nil {
+				klog.Warningf("error deleting temp dir %q: %v", tmpDir, err)
+			}
+		}()
+		tarFile = path.Join(tmpDir, utils.SanitizeString(primaryURL))
+		err = utils.UngzipFile(localFile, tarFile)
+		if err != nil {
+			return fmt.Errorf("error ungzipping container image: %v", err)
+		}
+	} else {
+		// Assume container image is tar file alerady
+		tarFile = localFile
+	}
+
+	// Load the container image
+	var args []string
+	switch runtime {
+	case "docker":
+		args = []string{"docker", "load", "-i", tarFile}
+	case "containerd":
+		args = []string{"ctr", "--namespace", "k8s.io", "images", "import", tarFile}
+	default:
+		return fmt.Errorf("unknown container runtime: %s", runtime)
+	}
 	human := strings.Join(args, " ")
 
 	klog.Infof("running command %s", human)
@@ -114,8 +166,4 @@ func (_ *LoadImageTask) RenderLocal(t *local.LocalTarget, a, e, changes *LoadIma
 	}
 
 	return nil
-}
-
-func (_ *LoadImageTask) RenderCloudInit(t *cloudinit.CloudInitTarget, a, e, changes *LoadImageTask) error {
-	return fmt.Errorf("LoadImageTask::RenderCloudInit not implemented")
 }

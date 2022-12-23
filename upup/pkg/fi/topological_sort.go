@@ -1,5 +1,5 @@
 /*
-Copyright 2016 The Kubernetes Authors.
+Copyright 2019 The Kubernetes Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -17,21 +17,36 @@ limitations under the License.
 package fi
 
 import (
-	"crypto/x509/pkix"
 	"fmt"
 	"reflect"
 
-	"k8s.io/klog"
-
+	"k8s.io/klog/v2"
 	"k8s.io/kops/util/pkg/reflectutils"
 )
 
-type HasDependencies interface {
-	GetDependencies(tasks map[string]Task) []Task
+type HasDependencies[T SubContext] interface {
+	GetDependencies(tasks map[string]Task[T]) []Task[T]
+}
+
+type CloudupHasDependencies = HasDependencies[CloudupSubContext]
+type InstallHasDependencies = HasDependencies[InstallSubContext]
+type NodeupHasDependencies = HasDependencies[NodeupSubContext]
+
+// NotADependency is a marker type to prevent FindTaskDependencies() from considering it a potential dependency.
+type NotADependency[T SubContext] struct{}
+
+type NodeupNotADependency = NotADependency[NodeupSubContext]
+type CloudupNotADependency = NotADependency[CloudupSubContext]
+
+var _ CloudupHasDependencies = &CloudupNotADependency{}
+var _ NodeupHasDependencies = &NodeupNotADependency{}
+
+func (NotADependency[T]) GetDependencies(map[string]Task[T]) []Task[T] {
+	return nil
 }
 
 // FindTaskDependencies returns a map from each task's key to the discovered list of dependencies
-func FindTaskDependencies(tasks map[string]Task) map[string][]string {
+func FindTaskDependencies[T SubContext](tasks map[string]Task[T]) map[string][]string {
 	taskToId := make(map[interface{}]string)
 	for k, t := range tasks {
 		taskToId[t] = k
@@ -40,10 +55,10 @@ func FindTaskDependencies(tasks map[string]Task) map[string][]string {
 	edges := make(map[string][]string)
 
 	for k, t := range tasks {
-		task := t.(Task)
+		task := t
 
-		var dependencies []Task
-		if hd, ok := task.(HasDependencies); ok {
+		var dependencies []Task[T]
+		if hd, ok := task.(HasDependencies[T]); ok {
 			dependencies = hd.GetDependencies(tasks)
 		} else {
 			dependencies = reflectForDependencies(tasks, task)
@@ -69,15 +84,25 @@ func FindTaskDependencies(tasks map[string]Task) map[string][]string {
 	return edges
 }
 
-func reflectForDependencies(tasks map[string]Task, task Task) []Task {
+func reflectForDependencies[T SubContext](tasks map[string]Task[T], task Task[T]) []Task[T] {
 	v := reflect.ValueOf(task).Elem()
 	return getDependencies(tasks, v)
 }
 
-func getDependencies(tasks map[string]Task, v reflect.Value) []Task {
-	var dependencies []Task
+// FindDependencies will try to infer dependencies for an arbitrary object
+func FindDependencies[T SubContext](tasks map[string]Task[T], o interface{}) []Task[T] {
+	if hd, ok := o.(HasDependencies[T]); ok {
+		return hd.GetDependencies(tasks)
+	}
 
-	err := reflectutils.ReflectRecursive(v, func(path string, f *reflect.StructField, v reflect.Value) error {
+	v := reflect.ValueOf(o).Elem()
+	return getDependencies(tasks, v)
+}
+
+func getDependencies[T SubContext](tasks map[string]Task[T], v reflect.Value) []Task[T] {
+	var dependencies []Task[T]
+
+	visitor := func(path *reflectutils.FieldPath, f *reflect.StructField, v reflect.Value) error {
 		if reflectutils.IsPrimitiveValue(v) {
 			return nil
 		}
@@ -91,24 +116,20 @@ func getDependencies(tasks map[string]Task, v reflect.Value) []Task {
 			return nil
 
 		case reflect.Struct:
-			if path == "" {
+			if path.IsEmpty() {
 				// Ignore self - we are a struct, but not our own dependency!
 				return nil
 			}
 
 			// TODO: Can we / should we use a type-switch statement
 			intf := v.Addr().Interface()
-			if hd, ok := intf.(HasDependencies); ok {
+			if hd, ok := intf.(HasDependencies[T]); ok {
 				deps := hd.GetDependencies(tasks)
 				dependencies = append(dependencies, deps...)
-			} else if dep, ok := intf.(Task); ok {
+			} else if dep, ok := intf.(Task[T]); ok {
 				dependencies = append(dependencies, dep)
 			} else if _, ok := intf.(Resource); ok {
-				// Ignore: not a dependency (?)
-			} else if _, ok := intf.(*ResourceHolder); ok {
-				// Ignore: not a dependency (?)
-			} else if _, ok := intf.(*pkix.Name); ok {
-				// Ignore: not a dependency
+				// Ignore: not a dependency, unless we explicitly implement HasDependencies (e.g. TaskDependentResource)
 			} else {
 				return fmt.Errorf("Unhandled type for %q: %T", path, v.Interface())
 			}
@@ -118,8 +139,9 @@ func getDependencies(tasks map[string]Task, v reflect.Value) []Task {
 			klog.Infof("Unhandled kind for %q: %T", path, v.Interface())
 			return fmt.Errorf("Unhandled kind for %q: %v", path, v.Kind())
 		}
-	})
+	}
 
+	err := reflectutils.ReflectRecursive(v, visitor, &reflectutils.ReflectOptions{DeprecatedDoubleVisit: true})
 	if err != nil {
 		klog.Fatalf("unexpected error finding dependencies %v", err)
 	}

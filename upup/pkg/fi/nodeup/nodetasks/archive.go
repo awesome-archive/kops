@@ -19,16 +19,16 @@ package nodetasks
 import (
 	"encoding/json"
 	"fmt"
-	"io/ioutil"
 	"os"
 	"os/exec"
 	"path"
+	"path/filepath"
 	"reflect"
 	"strconv"
+	"strings"
 
-	"k8s.io/klog"
+	"k8s.io/klog/v2"
 	"k8s.io/kops/upup/pkg/fi"
-	"k8s.io/kops/upup/pkg/fi/nodeup/cloudinit"
 	"k8s.io/kops/upup/pkg/fi/nodeup/local"
 	"k8s.io/kops/util/pkg/hashing"
 )
@@ -47,6 +47,9 @@ type Archive struct {
 
 	// StripComponents is the number of components to remove when expanding the archive
 	StripComponents int `json:"stripComponents,omitempty"`
+
+	// MapFiles is the list of files to extract with corresponding directories to extract
+	MapFiles map[string]string `json:"mapFiles,omitempty"`
 }
 
 const (
@@ -54,16 +57,14 @@ const (
 	localArchiveStateDir = "/var/cache/nodeup/archives/state/"
 )
 
-var _ fi.HasDependencies = &Archive{}
+var _ fi.NodeupHasDependencies = &Archive{}
 
 // GetDependencies implements HasDependencies::GetDependencies
-func (e *Archive) GetDependencies(tasks map[string]fi.Task) []fi.Task {
-	var deps []fi.Task
+func (e *Archive) GetDependencies(tasks map[string]fi.NodeupTask) []fi.NodeupTask {
+	var deps []fi.NodeupTask
 
 	// Requires parent directories to be created
-	for _, v := range findCreatesDirParents(e.TargetDir, tasks) {
-		deps = append(deps, v)
-	}
+	deps = append(deps, findCreatesDirParents(e.TargetDir, tasks)...)
 
 	return deps
 }
@@ -72,10 +73,6 @@ var _ fi.HasName = &Archive{}
 
 func (e *Archive) GetName() *string {
 	return &e.Name
-}
-
-func (e *Archive) SetName(name string) {
-	e.Name = name
 }
 
 // String returns a string representation, implementing the Stringer interface
@@ -91,10 +88,10 @@ func (e *Archive) Dir() string {
 }
 
 // Find implements fi.Task::Find
-func (e *Archive) Find(c *fi.Context) (*Archive, error) {
+func (e *Archive) Find(c *fi.NodeupContext) (*Archive, error) {
 	// We write a marker file to prevent re-execution
 	localStateFile := path.Join(localArchiveStateDir, e.Name)
-	stateBytes, err := ioutil.ReadFile(localStateFile)
+	stateBytes, err := os.ReadFile(localStateFile)
 	if err != nil {
 		if os.IsNotExist(err) {
 			stateBytes = nil
@@ -126,8 +123,8 @@ func (e *Archive) Find(c *fi.Context) (*Archive, error) {
 }
 
 // Run implements fi.Task::Run
-func (e *Archive) Run(c *fi.Context) error {
-	return fi.DefaultDeltaRunMethod(e, c)
+func (e *Archive) Run(c *fi.NodeupContext) error {
+	return fi.NodeupDefaultDeltaRunMethod(e, c)
 }
 
 // CheckChanges implements fi.Task::CheckChanges
@@ -141,7 +138,7 @@ func (_ *Archive) RenderLocal(t *local.LocalTarget, a, e, changes *Archive) erro
 		klog.Infof("Installing archive %q", e.Name)
 
 		localFile := path.Join(localArchiveDir, e.Name)
-		if err := os.MkdirAll(localArchiveDir, 0755); err != nil {
+		if err := os.MkdirAll(localArchiveDir, 0o755); err != nil {
 			return fmt.Errorf("error creating directories %q: %v", localArchiveDir, err)
 		}
 
@@ -157,25 +154,43 @@ func (_ *Archive) RenderLocal(t *local.LocalTarget, a, e, changes *Archive) erro
 			return err
 		}
 
-		targetDir := e.TargetDir
-		if err := os.MkdirAll(targetDir, 0755); err != nil {
-			return fmt.Errorf("error creating directories %q: %v", targetDir, err)
-		}
+		if len(e.MapFiles) == 0 {
+			targetDir := e.TargetDir
+			if err := os.MkdirAll(targetDir, 0o755); err != nil {
+				return fmt.Errorf("error creating directories %q: %v", targetDir, err)
+			}
 
-		args := []string{"tar", "xf", localFile, "-C", targetDir}
-		if e.StripComponents != 0 {
-			args = append(args, "--strip-components="+strconv.Itoa(e.StripComponents))
-		}
+			args := []string{"tar", "xf", localFile, "-C", targetDir}
+			if e.StripComponents != 0 {
+				args = append(args, "--strip-components="+strconv.Itoa(e.StripComponents))
+			}
 
-		klog.Infof("running command %s", args)
-		cmd := exec.Command(args[0], args[1:]...)
-		if output, err := cmd.CombinedOutput(); err != nil {
-			return fmt.Errorf("error installing archive %q: %v: %s", e.Name, err, string(output))
+			klog.Infof("running command %s", args)
+			cmd := exec.Command(args[0], args[1:]...)
+			if output, err := cmd.CombinedOutput(); err != nil {
+				return fmt.Errorf("error installing archive %q: %v: %s", e.Name, err, string(output))
+			}
+		} else {
+			for src, dest := range e.MapFiles {
+				stripCount := strings.Count(src, "/")
+				targetDir := filepath.Join(e.TargetDir, dest)
+				if err := os.MkdirAll(targetDir, 0o755); err != nil {
+					return fmt.Errorf("error creating directories %q: %v", targetDir, err)
+				}
+
+				args := []string{"tar", "xf", localFile, "-C", targetDir, "--wildcards", "--strip-components=" + strconv.Itoa(stripCount), src}
+
+				klog.Infof("running command %s", args)
+				cmd := exec.Command(args[0], args[1:]...)
+				if output, err := cmd.CombinedOutput(); err != nil {
+					return fmt.Errorf("error installing archive %q: %v: %s", e.Name, err, string(output))
+				}
+			}
 		}
 
 		// We write a marker file to prevent re-execution
 		localStateFile := path.Join(localArchiveStateDir, e.Name)
-		if err := os.MkdirAll(localArchiveStateDir, 0755); err != nil {
+		if err := os.MkdirAll(localArchiveStateDir, 0o755); err != nil {
 			return fmt.Errorf("error creating directories %q: %v", localArchiveStateDir, err)
 		}
 
@@ -184,7 +199,7 @@ func (_ *Archive) RenderLocal(t *local.LocalTarget, a, e, changes *Archive) erro
 			return fmt.Errorf("error marshaling archive state: %v", err)
 		}
 
-		if err := ioutil.WriteFile(localStateFile, state, 0644); err != nil {
+		if err := os.WriteFile(localStateFile, state, 0o644); err != nil {
 			return fmt.Errorf("error writing archive state: %v", err)
 		}
 	} else {
@@ -192,24 +207,6 @@ func (_ *Archive) RenderLocal(t *local.LocalTarget, a, e, changes *Archive) erro
 			klog.Warningf("cannot apply archive changes for %q: %v", e.Name, changes)
 		}
 	}
-
-	return nil
-}
-
-// RenderCloudInit implements fi.Task::Render functionality for a CloudInit target
-func (_ *Archive) RenderCloudInit(t *cloudinit.CloudInitTarget, a, e, changes *Archive) error {
-	archiveName := e.Name
-
-	localFile := path.Join(localArchiveDir, archiveName)
-	t.AddMkdirpCommand(localArchiveDir, 0755)
-
-	targetDir := e.TargetDir
-	t.AddMkdirpCommand(targetDir, 0755)
-
-	url := e.Source
-	t.AddDownloadCommand(cloudinit.Always, url, localFile)
-
-	t.AddCommand(cloudinit.Always, "tar", "xf", localFile, "-C", targetDir)
 
 	return nil
 }

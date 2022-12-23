@@ -1,5 +1,5 @@
 /*
-Copyright 2016 The Kubernetes Authors.
+Copyright 2019 The Kubernetes Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -22,11 +22,9 @@ import (
 	"strconv"
 	"strings"
 
-	"k8s.io/klog"
+	"k8s.io/klog/v2"
 	"k8s.io/kops/upup/pkg/fi"
-	"k8s.io/kops/upup/pkg/fi/nodeup/cloudinit"
 	"k8s.io/kops/upup/pkg/fi/nodeup/local"
-	"k8s.io/kops/upup/pkg/fi/utils"
 )
 
 // UserTask is responsible for creating a user, by calling useradd
@@ -38,7 +36,7 @@ type UserTask struct {
 	Home  string `json:"home"`
 }
 
-var _ fi.Task = &UserTask{}
+var _ fi.NodeupTask = &UserTask{}
 
 func (e *UserTask) String() string {
 	return fmt.Sprintf("User: %s", e.Name)
@@ -50,22 +48,7 @@ func (f *UserTask) GetName() *string {
 	return &f.Name
 }
 
-func (f *UserTask) SetName(name string) {
-	klog.Fatalf("SetName not supported for User task")
-}
-
-func NewUserTask(name string, contents string, meta string) (fi.Task, error) {
-	s := &UserTask{Name: name}
-
-	err := utils.YamlUnmarshal([]byte(contents), s)
-	if err != nil {
-		return nil, fmt.Errorf("error parsing json for service %q: %v", name, err)
-	}
-
-	return s, nil
-}
-
-func (e *UserTask) Find(c *fi.Context) (*UserTask, error) {
+func (e *UserTask) Find(c *fi.NodeupContext) (*UserTask, error) {
 	info, err := fi.LookupUser(e.Name)
 	if err != nil {
 		return nil, err
@@ -84,8 +67,8 @@ func (e *UserTask) Find(c *fi.Context) (*UserTask, error) {
 	return actual, nil
 }
 
-func (e *UserTask) Run(c *fi.Context) error {
-	return fi.DefaultDeltaRunMethod(e, c)
+func (e *UserTask) Run(c *fi.NodeupContext) error {
+	return fi.NodeupDefaultDeltaRunMethod(e, c)
 }
 
 func (_ *UserTask) CheckChanges(a, e, changes *UserTask) error {
@@ -141,16 +124,6 @@ func (_ *UserTask) RenderLocal(t *local.LocalTarget, a, e, changes *UserTask) er
 			}
 		}
 	}
-
-	return nil
-}
-
-func (_ *UserTask) RenderCloudInit(t *cloudinit.CloudInitTarget, a, e, changes *UserTask) error {
-	args := buildUseraddArgs(e)
-	cmd := []string{"useradd"}
-	cmd = append(cmd, args...)
-	klog.Infof("Creating user %q", e.Name)
-	t.AddCommand(cloudinit.Once, cmd...)
 
 	return nil
 }

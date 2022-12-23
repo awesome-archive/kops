@@ -1,0 +1,82 @@
+---
+name: CI
+
+'on':
+  - push
+  - pull_request
+
+env:
+  GOPROXY: https://proxy.golang.org
+  GOPATH: ${{ github.workspace }}/go
+
+permissions:
+  contents: read
+
+jobs:
+  build-linux-amd64:
+    runs-on: ubuntu-20.04
+    steps:
+      - name: Set up go
+        uses: actions/setup-go@6edd4406fa81c3da01a34fa6f6343087c207a568
+        with:
+          go-version: '1.19.4'
+
+      - uses: actions/checkout@755da8c3cf115ac066823e79a1e1788f8940201b
+        with:
+          path: ${{ env.GOPATH }}/src/k8s.io/kops
+
+      - name: make all examples test
+        working-directory: ${{ env.GOPATH }}/src/k8s.io/kops
+        run: |
+          make all examples test
+
+  build-macos-amd64:
+    runs-on: macos-latest
+    steps:
+    - name: Set up go
+      uses: actions/setup-go@6edd4406fa81c3da01a34fa6f6343087c207a568
+      with:
+        go-version: '1.19.4'
+
+    - uses: actions/checkout@755da8c3cf115ac066823e79a1e1788f8940201b
+      with:
+        path: ${{ env.GOPATH }}/src/k8s.io/kops
+
+    - name: make kops examples test
+      working-directory: ${{ env.GOPATH }}/src/k8s.io/kops
+      run: |
+        make kops examples test
+
+  build-windows-amd64:
+    runs-on: windows-2019
+    steps:
+    - name: Set up go
+      uses: actions/setup-go@6edd4406fa81c3da01a34fa6f6343087c207a568
+      with:
+        go-version: '1.19.4'
+
+    - uses: actions/checkout@755da8c3cf115ac066823e79a1e1788f8940201b
+      with:
+        path: ${{ env.GOPATH }}/src/k8s.io/kops
+
+    - name: make kops examples test
+      working-directory: ${{ env.GOPATH }}/src/k8s.io/kops
+      run: |
+        make kops examples test-windows
+
+  verify:
+    runs-on: ubuntu-20.04
+    steps:
+      - name: Set up go
+        uses: actions/setup-go@6edd4406fa81c3da01a34fa6f6343087c207a568
+        with:
+          go-version: '1.19.4'
+
+      - uses: actions/checkout@755da8c3cf115ac066823e79a1e1788f8940201b
+        with:
+          path: ${{ env.GOPATH }}/src/k8s.io/kops
+
+      - name: make quick-ci
+        working-directory: ${{ env.GOPATH }}/src/k8s.io/kops
+        run: |
+          make quick-ci

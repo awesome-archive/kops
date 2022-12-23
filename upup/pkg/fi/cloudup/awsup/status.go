@@ -22,7 +22,7 @@ import (
 
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/ec2"
-	"k8s.io/klog"
+	"k8s.io/klog/v2"
 	"k8s.io/kops/pkg/apis/kops"
 	"k8s.io/kops/protokube/pkg/etcd"
 	"k8s.io/kops/upup/pkg/fi"
@@ -67,9 +67,7 @@ func findEtcdStatus(c AWSCloud, cluster *kops.Cluster) ([]kops.EtcdClusterStatus
 	var volumes []*ec2.Volume
 	klog.V(2).Infof("Listing EC2 Volumes")
 	err := c.EC2().DescribeVolumesPages(request, func(p *ec2.DescribeVolumesOutput, lastPage bool) bool {
-		for _, volume := range p.Volumes {
-			volumes = append(volumes, volume)
-		}
+		volumes = append(volumes, p.Volumes...)
 		return true
 	})
 	if err != nil {
@@ -87,12 +85,12 @@ func findEtcdStatus(c AWSCloud, cluster *kops.Cluster) ([]kops.EtcdClusterStatus
 			v := aws.StringValue(tag.Value)
 
 			if strings.HasPrefix(k, TagNameEtcdClusterPrefix) {
-				etcdClusterName := strings.TrimPrefix(k, TagNameEtcdClusterPrefix)
+				etcdClusterName = strings.TrimPrefix(k, TagNameEtcdClusterPrefix)
 				etcdClusterSpec, err = etcd.ParseEtcdClusterSpec(etcdClusterName, v)
 				if err != nil {
 					return nil, fmt.Errorf("error parsing etcd cluster tag %q on volume %q: %v", v, volumeID, err)
 				}
-			} else if k == TagNameRolePrefix+TagRoleMaster {
+			} else if k == TagNameRolePrefix+TagRoleMaster || k == TagNameRolePrefix+TagRoleControlPlane {
 				master = true
 			}
 		}
@@ -111,7 +109,7 @@ func findEtcdStatus(c AWSCloud, cluster *kops.Cluster) ([]kops.EtcdClusterStatus
 		memberName := etcdClusterSpec.NodeName
 		status.Members = append(status.Members, &kops.EtcdMemberStatus{
 			Name:     memberName,
-			VolumeId: aws.StringValue(volume.VolumeId),
+			VolumeID: aws.StringValue(volume.VolumeId),
 		})
 	}
 

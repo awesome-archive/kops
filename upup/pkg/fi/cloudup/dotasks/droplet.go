@@ -1,5 +1,5 @@
 /*
-Copyright 2016 The Kubernetes Authors.
+Copyright 2019 The Kubernetes Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -19,39 +19,45 @@ package dotasks
 import (
 	"context"
 	"errors"
+	"fmt"
 
 	"github.com/digitalocean/godo"
 
-	"k8s.io/kops/pkg/resources/digitalocean"
 	"k8s.io/kops/upup/pkg/fi"
 	"k8s.io/kops/upup/pkg/fi/cloudup/do"
 	_ "k8s.io/kops/upup/pkg/fi/cloudup/terraform"
 )
 
-//go:generate fitask -type=Droplet
 // Droplet represents a group of droplets. In the future it
 // will be managed by the Machines API
+// +kops:fitask
 type Droplet struct {
 	Name      *string
-	Lifecycle *fi.Lifecycle
+	Lifecycle fi.Lifecycle
 
-	Region   *string
-	Size     *string
-	Image    *string
-	SSHKey   *string
-	Tags     []string
-	Count    int
-	UserData *fi.ResourceHolder
+	Region      *string
+	Size        *string
+	Image       *string
+	SSHKey      *string
+	VPCUUID     *string
+	NetworkCIDR *string
+	VPCName     *string
+	Tags        []string
+	Count       int
+	UserData    fi.Resource
 }
 
-var _ fi.CompareWithID = &Droplet{}
+var (
+	_ fi.CloudupTask   = &Droplet{}
+	_ fi.CompareWithID = &Droplet{}
+)
 
 func (d *Droplet) CompareWithID() *string {
 	return d.Name
 }
 
-func (d *Droplet) Find(c *fi.Context) (*Droplet, error) {
-	cloud := c.Cloud.(*digitalocean.Cloud)
+func (d *Droplet) Find(c *fi.CloudupContext) (*Droplet, error) {
+	cloud := c.T.Cloud.(do.DOCloud)
 
 	droplets, err := listDroplets(cloud)
 	if err != nil {
@@ -62,7 +68,7 @@ func (d *Droplet) Find(c *fi.Context) (*Droplet, error) {
 	count := 0
 	var foundDroplet godo.Droplet
 	for _, droplet := range droplets {
-		if droplet.Name == fi.StringValue(d.Name) {
+		if droplet.Name == fi.ValueOf(d.Name) {
 			found = true
 			count++
 			foundDroplet = droplet
@@ -74,24 +80,25 @@ func (d *Droplet) Find(c *fi.Context) (*Droplet, error) {
 	}
 
 	return &Droplet{
-		Name:      fi.String(foundDroplet.Name),
+		Name:      fi.PtrTo(foundDroplet.Name),
 		Count:     count,
-		Region:    fi.String(foundDroplet.Region.Slug),
-		Size:      fi.String(foundDroplet.Size.Slug),
-		Image:     fi.String(foundDroplet.Image.Slug),
+		Region:    fi.PtrTo(foundDroplet.Region.Slug),
+		Size:      fi.PtrTo(foundDroplet.Size.Slug),
+		Image:     d.Image, //Image should not change so we keep it as-is
 		Tags:      foundDroplet.Tags,
 		SSHKey:    d.SSHKey,   // TODO: get from droplet or ignore change
 		UserData:  d.UserData, // TODO: get from droplet or ignore change
+		VPCUUID:   fi.PtrTo(foundDroplet.VPCUUID),
 		Lifecycle: d.Lifecycle,
 	}, nil
 }
 
-func listDroplets(cloud *digitalocean.Cloud) ([]godo.Droplet, error) {
+func listDroplets(cloud do.DOCloud) ([]godo.Droplet, error) {
 	allDroplets := []godo.Droplet{}
 
 	opt := &godo.ListOptions{}
 	for {
-		droplets, resp, err := cloud.Droplets().List(context.TODO(), opt)
+		droplets, resp, err := cloud.DropletsService().List(context.TODO(), opt)
 		if err != nil {
 			return nil, err
 		}
@@ -113,12 +120,12 @@ func listDroplets(cloud *digitalocean.Cloud) ([]godo.Droplet, error) {
 	return allDroplets, nil
 }
 
-func (d *Droplet) Run(c *fi.Context) error {
-	return fi.DefaultDeltaRunMethod(d, c)
+func (d *Droplet) Run(c *fi.CloudupContext) error {
+	return fi.CloudupDefaultDeltaRunMethod(d, c)
 }
 
 func (_ *Droplet) RenderDO(t *do.DOAPITarget, a, e, changes *Droplet) error {
-	userData, err := e.UserData.AsString()
+	userData, err := fi.ResourceAsString(e.UserData)
 	if err != nil {
 		return err
 	}
@@ -142,21 +149,34 @@ func (_ *Droplet) RenderDO(t *do.DOAPITarget, a, e, changes *Droplet) error {
 		newDropletCount = expectedCount - actualCount
 	}
 
-	var dropletNames []string
-	for i := 0; i < newDropletCount; i++ {
-		dropletNames = append(dropletNames, fi.StringValue(e.Name))
+	// associate vpcuuid to the droplet if set.
+	vpcUUID := ""
+	if fi.ValueOf(e.NetworkCIDR) != "" {
+		vpcUUID, err = t.Cloud.GetVPCUUID(fi.ValueOf(e.NetworkCIDR), fi.ValueOf(e.VPCName))
+		if err != nil {
+			return fmt.Errorf("Error fetching vpcUUID from network cidr=%s", fi.ValueOf(e.NetworkCIDR))
+		}
+	} else if fi.ValueOf(e.VPCUUID) != "" {
+		vpcUUID = fi.ValueOf(e.VPCUUID)
 	}
 
-	_, _, err = t.Cloud.Droplets().CreateMultiple(context.TODO(), &godo.DropletMultiCreateRequest{
-		Names:             dropletNames,
-		Region:            fi.StringValue(e.Region),
-		Size:              fi.StringValue(e.Size),
-		Image:             godo.DropletCreateImage{Slug: fi.StringValue(e.Image)},
-		PrivateNetworking: true,
-		Tags:              e.Tags,
-		UserData:          userData,
-		SSHKeys:           []godo.DropletCreateSSHKey{{Fingerprint: fi.StringValue(e.SSHKey)}},
-	})
+	for i := 0; i < newDropletCount; i++ {
+		_, _, err = t.Cloud.DropletsService().Create(context.TODO(), &godo.DropletCreateRequest{
+			Name:     fi.ValueOf(e.Name),
+			Region:   fi.ValueOf(e.Region),
+			Size:     fi.ValueOf(e.Size),
+			Image:    godo.DropletCreateImage{Slug: fi.ValueOf(e.Image)},
+			Tags:     e.Tags,
+			VPCUUID:  vpcUUID,
+			UserData: userData,
+			SSHKeys:  []godo.DropletCreateSSHKey{{Fingerprint: fi.ValueOf(e.SSHKey)}},
+		})
+
+		if err != nil {
+			return fmt.Errorf("Error creating droplet with Name=%s", fi.ValueOf(e.Name))
+		}
+	}
+
 	return err
 }
 

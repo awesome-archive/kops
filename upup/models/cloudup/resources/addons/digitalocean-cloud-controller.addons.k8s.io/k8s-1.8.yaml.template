@@ -22,14 +22,22 @@ spec:
     metadata:
       labels:
         k8s-app: digitalocean-cloud-controller-manager
-      annotations:
-        scheduler.alpha.kubernetes.io/critical-pod: ''
     spec:
-      nodeSelector:
-        node-role.kubernetes.io/master: ""
+      affinity:
+        nodeAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+            nodeSelectorTerms:
+            - matchExpressions:
+              - key: node-role.kubernetes.io/control-plane
+                operator: Exists
+            - matchExpressions:
+              - key: node-role.kubernetes.io/master
+                operator: Exists
       serviceAccountName: cloud-controller-manager
       dnsPolicy: Default
+      nodeSelector: null
       hostNetwork: true
+      priorityClassName: system-node-critical
       tolerations:
         - key: "node.cloudprovider.kubernetes.io/uninitialized"
           value: "true"
@@ -37,6 +45,8 @@ spec:
         - key: "CriticalAddonsOnly"
           operator: "Exists"
         - key: "node-role.kubernetes.io/master"
+          effect: NoSchedule
+        - key: "node-role.kubernetes.io/control-plane"
           effect: NoSchedule
         - effect: NoExecute
           key: node.kubernetes.io/not-ready
@@ -47,11 +57,10 @@ spec:
           operator: Exists
           tolerationSeconds: 300
       containers:
-      - image: digitalocean/digitalocean-cloud-controller-manager:v0.1.7
+      - image: digitalocean/digitalocean-cloud-controller-manager:v0.1.36
         name: digitalocean-cloud-controller-manager
         command:
           - "/bin/digitalocean-cloud-controller-manager"
-          - "--cloud-provider=digitalocean"
           - "--leader-elect=true"
         resources:
           requests:
@@ -145,6 +154,17 @@ rules:
   - list
   - watch
   - update
+- apiGroups:
+  - coordination.k8s.io
+  resources:
+  - leases
+  verbs:
+  - get
+  - watch
+  - list
+  - create
+  - update
+  - delete
 ---
 kind: ClusterRoleBinding
 apiVersion: rbac.authorization.k8s.io/v1

@@ -18,6 +18,7 @@ package vfs
 
 import (
 	"bytes"
+	"context"
 	"crypto/tls"
 	"encoding/hex"
 	"fmt"
@@ -38,11 +39,11 @@ import (
 	"github.com/gophercloud/gophercloud/pagination"
 	"k8s.io/apimachinery/pkg/util/wait"
 	"k8s.io/client-go/util/homedir"
-	"k8s.io/klog"
+	"k8s.io/klog/v2"
 	"k8s.io/kops/util/pkg/hashing"
 )
 
-func NewSwiftClient() (*gophercloud.ServiceClient, error) {
+func NewSwiftClient(ctx context.Context) (*gophercloud.ServiceClient, error) {
 	config := OpenstackConfig{}
 
 	// Check if env credentials are valid first
@@ -55,6 +56,10 @@ func NewSwiftClient() (*gophercloud.ServiceClient, error) {
 	if err != nil {
 		return nil, fmt.Errorf("error building openstack provider client: %v", err)
 	}
+	ua := gophercloud.UserAgent{}
+	ua.Prepend("kops/swift")
+	pc.UserAgent = ua
+	klog.V(4).Infof("Using user-agent %s", ua.Join())
 
 	tlsconfig := &tls.Config{}
 	tlsconfig.InsecureSkipVerify = true
@@ -91,10 +96,9 @@ func NewSwiftClient() (*gophercloud.ServiceClient, error) {
 	return client, nil
 }
 
-type OpenstackConfig struct {
-}
+type OpenstackConfig struct{}
 
-func (_ OpenstackConfig) filename() (string, error) {
+func (OpenstackConfig) filename() (string, error) {
 	name := os.Getenv("OPENSTACK_CREDENTIAL_FILE")
 	if name != "" {
 		klog.V(2).Infof("using openstack config found in $OPENSTACK_CREDENTIAL_FILE: %s", name)
@@ -131,20 +135,22 @@ func (oc OpenstackConfig) getSection(name string, items []string) (map[string]st
 }
 
 func (oc OpenstackConfig) GetCredential() (gophercloud.AuthOptions, error) {
-
 	// prioritize environment config
 	env, enverr := openstack.AuthOptionsFromEnv()
 	if enverr != nil {
-		klog.Warningf("Could not initialize swift from environment: %v", enverr)
+		klog.Warningf("Could not initialize OpenStack config from environment: %v", enverr)
 		// fallback to config file
 		return oc.getCredentialFromFile()
 	}
-	return env, nil
 
+	if env.ApplicationCredentialID != "" && env.Username == "" {
+		env.Scope = &gophercloud.AuthScope{}
+	}
+	env.AllowReauth = true
+	return env, nil
 }
 
 func (oc OpenstackConfig) GetRegion() (string, error) {
-
 	var region string
 	if region = os.Getenv("OS_REGION_NAME"); region != "" {
 		if len(region) > 1 {
@@ -159,7 +165,7 @@ func (oc OpenstackConfig) GetRegion() (string, error) {
 	// TODO: Unsure if this is the correct section for region
 	values, err := oc.getSection("Global", items)
 	if err != nil {
-		return "", fmt.Errorf("Region not provided in OS_REGION_NAME or openstack config section GLOBAL")
+		return "", fmt.Errorf("region not provided in OS_REGION_NAME or openstack config section GLOBAL")
 	}
 	return values["region"], nil
 }
@@ -221,14 +227,16 @@ func (oc OpenstackConfig) GetServiceConfig(name string) (gophercloud.EndpointOpt
 
 // SwiftPath is a vfs path for Openstack Cloud Storage.
 type SwiftPath struct {
-	client *gophercloud.ServiceClient
-	bucket string
-	key    string
-	hash   string
+	vfsContext *VFSContext
+	bucket     string
+	key        string
+	hash       string
 }
 
-var _ Path = &SwiftPath{}
-var _ HasHash = &SwiftPath{}
+var (
+	_ Path    = &SwiftPath{}
+	_ HasHash = &SwiftPath{}
+)
 
 // swiftReadBackoff is the backoff strategy for Swift read retries.
 var swiftReadBackoff = wait.Backoff{
@@ -246,14 +254,14 @@ var swiftWriteBackoff = wait.Backoff{
 	Steps:    5,
 }
 
-func NewSwiftPath(client *gophercloud.ServiceClient, bucket string, key string) (*SwiftPath, error) {
+func NewSwiftPath(vfsContext *VFSContext, bucket string, key string) (*SwiftPath, error) {
 	bucket = strings.TrimSuffix(bucket, "/")
 	key = strings.TrimPrefix(key, "/")
 
 	return &SwiftPath{
-		client: client,
-		bucket: bucket,
-		key:    key,
+		vfsContext: vfsContext,
+		bucket:     bucket,
+		key:        key,
 	}, nil
 }
 
@@ -269,11 +277,20 @@ func (p *SwiftPath) String() string {
 	return p.Path()
 }
 
+func (p *SwiftPath) getClient(ctx context.Context) (*gophercloud.ServiceClient, error) {
+	return p.vfsContext.getSwiftClient(ctx)
+}
+
 func (p *SwiftPath) Remove() error {
+	ctx := context.TODO()
+
 	done, err := RetryWithBackoff(swiftWriteBackoff, func() (bool, error) {
-		opt := swiftobject.DeleteOpts{}
-		_, err := swiftobject.Delete(p.client, p.bucket, p.key, opt).Extract()
+		client, err := p.getClient(ctx)
 		if err != nil {
+			return false, err
+		}
+		opt := swiftobject.DeleteOpts{}
+		if _, err := swiftobject.Delete(client, p.bucket, p.key, opt).Extract(); err != nil {
 			if isSwiftNotFound(err) {
 				return true, os.ErrNotExist
 			}
@@ -291,27 +308,37 @@ func (p *SwiftPath) Remove() error {
 	}
 }
 
+func (p *SwiftPath) RemoveAllVersions() error {
+	return p.Remove()
+}
+
 func (p *SwiftPath) Join(relativePath ...string) Path {
 	args := []string{p.key}
 	args = append(args, relativePath...)
 	joined := path.Join(args...)
 	return &SwiftPath{
-		client: p.client,
-		bucket: p.bucket,
-		key:    joined,
+		vfsContext: p.vfsContext,
+		bucket:     p.bucket,
+		key:        joined,
 	}
 }
 
 func (p *SwiftPath) WriteFile(data io.ReadSeeker, acl ACL) error {
+	ctx := context.TODO()
+
 	done, err := RetryWithBackoff(swiftWriteBackoff, func() (bool, error) {
+		client, err := p.getClient(ctx)
+		if err != nil {
+			return false, err
+		}
+
 		klog.V(4).Infof("Writing file %q", p)
 		if _, err := data.Seek(0, 0); err != nil {
 			return false, fmt.Errorf("error seeking to start of data stream for %s: %v", p, err)
 		}
 
 		createOpts := swiftobject.CreateOpts{Content: data}
-		_, err := swiftobject.Create(p.client, p.bucket, p.key, createOpts).Extract()
-		if err != nil {
+		if _, err := swiftobject.Create(client, p.bucket, p.key, createOpts).Extract(); err != nil {
 			return false, fmt.Errorf("error writing %s: %v", p, err)
 		}
 
@@ -334,14 +361,21 @@ func (p *SwiftPath) WriteFile(data io.ReadSeeker, acl ACL) error {
 var createFileLockSwift sync.Mutex
 
 func (p *SwiftPath) CreateFile(data io.ReadSeeker, acl ACL) error {
+	ctx := context.TODO()
+
+	client, err := p.getClient(ctx)
+	if err != nil {
+		return err
+	}
+
 	createFileLockSwift.Lock()
 	defer createFileLockSwift.Unlock()
 
 	// Check if exists.
-	_, err := RetryWithBackoff(swiftReadBackoff, func() (bool, error) {
+	if _, err := RetryWithBackoff(swiftReadBackoff, func() (bool, error) {
 		klog.V(4).Infof("Getting file %q", p)
 
-		_, err := swiftobject.Get(p.client, p.bucket, p.key, swiftobject.GetOpts{}).Extract()
+		_, err := swiftobject.Get(client, p.bucket, p.key, swiftobject.GetOpts{}).Extract()
 		if err == nil {
 			return true, nil
 		} else if isSwiftNotFound(err) {
@@ -349,8 +383,7 @@ func (p *SwiftPath) CreateFile(data io.ReadSeeker, acl ACL) error {
 		} else {
 			return false, fmt.Errorf("error getting %s: %v", p, err)
 		}
-	})
-	if err == nil {
+	}); err == nil {
 		return os.ErrExist
 	} else if !os.IsNotExist(err) {
 		return err
@@ -365,14 +398,20 @@ func (p *SwiftPath) CreateFile(data io.ReadSeeker, acl ACL) error {
 }
 
 func (p *SwiftPath) createBucket() error {
+	ctx := context.TODO()
+
 	done, err := RetryWithBackoff(swiftWriteBackoff, func() (bool, error) {
-		_, err := swiftcontainer.Get(p.client, p.bucket, swiftcontainer.GetOpts{}).Extract()
-		if err == nil {
+		client, err := p.getClient(ctx)
+		if err != nil {
+			return false, err
+		}
+
+		if _, err := swiftcontainer.Get(client, p.bucket, swiftcontainer.GetOpts{}).Extract(); err == nil {
 			return true, nil
 		}
 		if isSwiftNotFound(err) {
 			createOpts := swiftcontainer.CreateOpts{}
-			_, err = swiftcontainer.Create(p.client, p.bucket, createOpts).Extract()
+			_, err = swiftcontainer.Create(client, p.bucket, createOpts).Extract()
 			return err == nil, err
 		}
 		return false, err
@@ -415,10 +454,17 @@ func (p *SwiftPath) ReadFile() ([]byte, error) {
 
 // WriteTo implements io.WriterTo
 func (p *SwiftPath) WriteTo(out io.Writer) (int64, error) {
+	ctx := context.TODO()
+
 	klog.V(4).Infof("Reading file %q", p)
 
+	client, err := p.getClient(ctx)
+	if err != nil {
+		return 0, err
+	}
+
 	opt := swiftobject.DownloadOpts{}
-	result := swiftobject.Download(p.client, p.bucket, p.key, opt)
+	result := swiftobject.Download(client, p.bucket, p.key, opt)
 	if result.Err != nil {
 		if isSwiftNotFound(result.Err) {
 			return 0, os.ErrNotExist
@@ -431,28 +477,34 @@ func (p *SwiftPath) WriteTo(out io.Writer) (int64, error) {
 }
 
 func (p *SwiftPath) readPath(opt swiftobject.ListOpts) ([]Path, error) {
+	ctx := context.TODO()
+
 	var ret []Path
 	done, err := RetryWithBackoff(swiftReadBackoff, func() (bool, error) {
+		client, err := p.getClient(ctx)
+		if err != nil {
+			return false, err
+		}
+
 		var paths []Path
-		pager := swiftobject.List(p.client, p.bucket, opt)
-		err := pager.EachPage(func(page pagination.Page) (bool, error) {
+		pager := swiftobject.List(client, p.bucket, opt)
+		if err := pager.EachPage(func(page pagination.Page) (bool, error) {
 			objects, err1 := swiftobject.ExtractInfo(page)
 			if err1 != nil {
 				return false, err1
 			}
 			for _, o := range objects {
 				child := &SwiftPath{
-					client: p.client,
-					bucket: p.bucket,
-					key:    o.Name,
-					hash:   o.Hash,
+					vfsContext: p.vfsContext,
+					bucket:     p.bucket,
+					key:        o.Name,
+					hash:       o.Hash,
 				}
 				paths = append(paths, child)
 			}
 
 			return true, nil
-		})
-		if err != nil {
+		}); err != nil {
 			if isSwiftNotFound(err) {
 				return true, os.ErrNotExist
 			}
@@ -474,7 +526,7 @@ func (p *SwiftPath) readPath(opt swiftobject.ListOpts) ([]Path, error) {
 // ReadDir implements Path::ReadDir.
 func (p *SwiftPath) ReadDir() ([]Path, error) {
 	prefix := p.key
-	if !strings.HasSuffix(prefix, "/") {
+	if prefix != "" && !strings.HasSuffix(prefix, "/") {
 		prefix += "/"
 	}
 	opt := swiftobject.ListOpts{
@@ -487,7 +539,7 @@ func (p *SwiftPath) ReadDir() ([]Path, error) {
 // ReadTree implements Path::ReadTree.
 func (p *SwiftPath) ReadTree() ([]Path, error) {
 	prefix := p.key
-	if !strings.HasSuffix(prefix, "/") {
+	if prefix != "" && !strings.HasSuffix(prefix, "/") {
 		prefix += "/"
 	}
 	opt := swiftobject.ListOpts{
@@ -517,7 +569,7 @@ func (p *SwiftPath) Hash(a hashing.HashAlgorithm) (*hashing.Hash, error) {
 
 	md5Bytes, err := hex.DecodeString(md5)
 	if err != nil {
-		return nil, fmt.Errorf("Etag was not a valid MD5 sum: %q", md5)
+		return nil, fmt.Errorf("etag was not a valid MD5 sum: %q", md5)
 	}
 
 	return &hashing.Hash{Algorithm: hashing.HashAlgorithmMD5, HashValue: md5Bytes}, nil

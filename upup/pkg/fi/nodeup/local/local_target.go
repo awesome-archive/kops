@@ -1,5 +1,5 @@
 /*
-Copyright 2016 The Kubernetes Authors.
+Copyright 2019 The Kubernetes Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -19,18 +19,17 @@ package local
 import (
 	"os/exec"
 
-	"k8s.io/apimachinery/pkg/util/sets"
 	"k8s.io/kops/upup/pkg/fi"
 )
 
 type LocalTarget struct {
 	CacheDir string
-	Tags     sets.String
+	Cloud    fi.Cloud
 }
 
-var _ fi.Target = &LocalTarget{}
+var _ fi.NodeupTarget = &LocalTarget{}
 
-func (t *LocalTarget) Finish(taskMap map[string]fi.Task) error {
+func (t *LocalTarget) Finish(taskMap map[string]fi.NodeupTask) error {
 	return nil
 }
 
@@ -39,9 +38,8 @@ func (t *LocalTarget) ProcessDeletions() bool {
 	return true
 }
 
-func (t *LocalTarget) HasTag(tag string) bool {
-	_, found := t.Tags[tag]
-	return found
+func (t *LocalTarget) DefaultCheckExisting() bool {
+	return true
 }
 
 // CombinedOutput is a helper function that executes a command, returning stdout & stderr combined

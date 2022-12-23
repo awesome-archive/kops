@@ -1,5 +1,5 @@
 /*
-Copyright 2018 The Kubernetes Authors.
+Copyright 2019 The Kubernetes Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -19,7 +19,7 @@ package try
 import (
 	"os"
 
-	"k8s.io/klog"
+	"k8s.io/klog/v2"
 )
 
 // RemoveFile will try to os.Remove the file, logging an error if it fails

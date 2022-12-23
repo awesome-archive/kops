@@ -1,0 +1,1256 @@
+
+---
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  annotations:
+    controller-gen.kubebuilder.io/version: v0.8.0
+  creationTimestamp: null
+  name: provisioners.karpenter.sh
+spec:
+  group: karpenter.sh
+  names:
+    categories:
+    - karpenter
+    kind: Provisioner
+    listKind: ProvisionerList
+    plural: provisioners
+    singular: provisioner
+  scope: Cluster
+  versions:
+  - name: v1alpha5
+    schema:
+      openAPIV3Schema:
+        description: Provisioner is the Schema for the Provisioners API
+        properties:
+          apiVersion:
+            description: 'APIVersion defines the versioned schema of this representation
+              of an object. Servers should convert recognized schemas to the latest
+              internal value, and may reject unrecognized values. More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#resources'
+            type: string
+          kind:
+            description: 'Kind is a string value representing the REST resource this
+              object represents. Servers may infer this from the endpoint the client
+              submits requests to. Cannot be updated. In CamelCase. More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#types-kinds'
+            type: string
+          metadata:
+            type: object
+          spec:
+            description: ProvisionerSpec is the top level provisioner specification.
+              Provisioners launch nodes in response to pods that are unschedulable.
+              A single provisioner is capable of managing a diverse set of nodes.
+              Node properties are determined from a combination of provisioner and
+              pod scheduling constraints.
+            properties:
+              consolidation:
+                description: Consolidation are the consolidation parameters
+                properties:
+                  enabled:
+                    description: Enabled enables consolidation if it has been set
+                    type: boolean
+                type: object
+              kubeletConfiguration:
+                description: KubeletConfiguration are options passed to the kubelet
+                  when provisioning nodes
+                properties:
+                  clusterDNS:
+                    description: clusterDNS is a list of IP addresses for the cluster
+                      DNS server. Note that not all providers may use all addresses.
+                    items:
+                      type: string
+                    type: array
+                  containerRuntime:
+                    description: ContainerRuntime is the container runtime to be used
+                      with your worker nodes.
+                    type: string
+                  evictionHard:
+                    additionalProperties:
+                      type: string
+                    description: EvictionHard is the map of signal names to quantities
+                      that define hard eviction thresholds
+                    type: object
+                  evictionMaxPodGracePeriod:
+                    description: EvictionMaxPodGracePeriod is the maximum allowed
+                      grace period (in seconds) to use when terminating pods in response
+                      to soft eviction thresholds being met.
+                    format: int32
+                    type: integer
+                  evictionSoft:
+                    additionalProperties:
+                      type: string
+                    description: EvictionSoft is the map of signal names to quantities
+                      that define soft eviction thresholds
+                    type: object
+                  evictionSoftGracePeriod:
+                    additionalProperties:
+                      type: string
+                    description: EvictionSoftGracePeriod is the map of signal names
+                      to quantities that define grace periods for each eviction signal
+                    type: object
+                  kubeReserved:
+                    additionalProperties:
+                      anyOf:
+                      - type: integer
+                      - type: string
+                      pattern: ^(\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))(([KMGTPE]i)|[numkMGTPE]|([eE](\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))))?$
+                      x-kubernetes-int-or-string: true
+                    description: KubeReserved contains resources reserved for Kubernetes
+                      system components.
+                    type: object
+                  maxPods:
+                    description: MaxPods is an override for the maximum number of
+                      pods that can run on a worker node instance.
+                    format: int32
+                    minimum: 0
+                    type: integer
+                  podsPerCore:
+                    description: PodsPerCore is an override for the number of pods
+                      that can run on a worker node instance based on the number of
+                      cpu cores. This value cannot exceed MaxPods, so, if MaxPods
+                      is a lower value, that value will be used.
+                    format: int32
+                    minimum: 0
+                    type: integer
+                  systemReserved:
+                    additionalProperties:
+                      anyOf:
+                      - type: integer
+                      - type: string
+                      pattern: ^(\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))(([KMGTPE]i)|[numkMGTPE]|([eE](\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))))?$
+                      x-kubernetes-int-or-string: true
+                    description: SystemReserved contains resources reserved for OS
+                      system daemons and kernel memory.
+                    type: object
+                type: object
+              labels:
+                additionalProperties:
+                  type: string
+                description: Labels are layered with Requirements and applied to every
+                  node.
+                type: object
+              limits:
+                description: Limits define a set of bounds for provisioning capacity.
+                properties:
+                  resources:
+                    additionalProperties:
+                      anyOf:
+                      - type: integer
+                      - type: string
+                      pattern: ^(\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))(([KMGTPE]i)|[numkMGTPE]|([eE](\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))))?$
+                      x-kubernetes-int-or-string: true
+                    description: Resources contains all the allocatable resources
+                      that Karpenter supports for limiting.
+                    type: object
+                type: object
+              provider:
+                description: Provider contains fields specific to your cloudprovider.
+                type: object
+                x-kubernetes-preserve-unknown-fields: true
+              providerRef:
+                description: ProviderRef is a reference to a dedicated CRD for the
+                  chosen provider, that holds additional configuration options
+                properties:
+                  apiVersion:
+                    description: API version of the referent
+                    type: string
+                  kind:
+                    description: 'Kind of the referent; More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#types-kinds"'
+                    type: string
+                  name:
+                    description: 'Name of the referent; More info: http://kubernetes.io/docs/user-guide/identifiers#names'
+                    type: string
+                type: object
+              requirements:
+                description: Requirements are layered with Labels and applied to every
+                  node.
+                items:
+                  description: A node selector requirement is a selector that contains
+                    values, a key, and an operator that relates the key and values.
+                  properties:
+                    key:
+                      description: The label key that the selector applies to.
+                      type: string
+                    operator:
+                      description: Represents a key's relationship to a set of values.
+                        Valid operators are In, NotIn, Exists, DoesNotExist. Gt, and
+                        Lt.
+                      type: string
+                    values:
+                      description: An array of string values. If the operator is In
+                        or NotIn, the values array must be non-empty. If the operator
+                        is Exists or DoesNotExist, the values array must be empty.
+                        If the operator is Gt or Lt, the values array must have a
+                        single element, which will be interpreted as an integer. This
+                        array is replaced during a strategic merge patch.
+                      items:
+                        type: string
+                      type: array
+                  required:
+                  - key
+                  - operator
+                  type: object
+                type: array
+              startupTaints:
+                description: StartupTaints are taints that are applied to nodes upon
+                  startup which are expected to be removed automatically within a
+                  short period of time, typically by a DaemonSet that tolerates the
+                  taint. These are commonly used by daemonsets to allow initialization
+                  and enforce startup ordering.  StartupTaints are ignored for provisioning
+                  purposes in that pods are not required to tolerate a StartupTaint
+                  in order to have nodes provisioned for them.
+                items:
+                  description: The node this Taint is attached to has the "effect"
+                    on any pod that does not tolerate the Taint.
+                  properties:
+                    effect:
+                      description: Required. The effect of the taint on pods that
+                        do not tolerate the taint. Valid effects are NoSchedule, PreferNoSchedule
+                        and NoExecute.
+                      type: string
+                    key:
+                      description: Required. The taint key to be applied to a node.
+                      type: string
+                    timeAdded:
+                      description: TimeAdded represents the time at which the taint
+                        was added. It is only written for NoExecute taints.
+                      format: date-time
+                      type: string
+                    value:
+                      description: The taint value corresponding to the taint key.
+                      type: string
+                  required:
+                  - effect
+                  - key
+                  type: object
+                type: array
+              taints:
+                description: Taints will be applied to every node launched by the
+                  Provisioner. If specified, the provisioner will not provision nodes
+                  for pods that do not have matching tolerations. Additional taints
+                  will be created that match pod tolerations on a per-node basis.
+                items:
+                  description: The node this Taint is attached to has the "effect"
+                    on any pod that does not tolerate the Taint.
+                  properties:
+                    effect:
+                      description: Required. The effect of the taint on pods that
+                        do not tolerate the taint. Valid effects are NoSchedule, PreferNoSchedule
+                        and NoExecute.
+                      type: string
+                    key:
+                      description: Required. The taint key to be applied to a node.
+                      type: string
+                    timeAdded:
+                      description: TimeAdded represents the time at which the taint
+                        was added. It is only written for NoExecute taints.
+                      format: date-time
+                      type: string
+                    value:
+                      description: The taint value corresponding to the taint key.
+                      type: string
+                  required:
+                  - effect
+                  - key
+                  type: object
+                type: array
+              ttlSecondsAfterEmpty:
+                description: "TTLSecondsAfterEmpty is the number of seconds the controller
+                  will wait before attempting to delete a node, measured from when
+                  the node is detected to be empty. A Node is considered to be empty
+                  when it does not have pods scheduled to it, excluding daemonsets.
+                  \n Termination due to no utilization is disabled if this field is
+                  not set."
+                format: int64
+                type: integer
+              ttlSecondsUntilExpired:
+                description: "TTLSecondsUntilExpired is the number of seconds the
+                  controller will wait before terminating a node, measured from when
+                  the node is created. This is useful to implement features like eventually
+                  consistent node upgrade, memory leak protection, and disruption
+                  testing. \n Termination due to expiration is disabled if this field
+                  is not set."
+                format: int64
+                type: integer
+              weight:
+                description: Weight is the priority given to the provisioner during
+                  scheduling. A higher numerical weight indicates that this provisioner
+                  will be ordered ahead of other provisioners with lower weights.
+                  A provisioner with no weight will be treated as if it is a provisioner
+                  with a weight of 0.
+                format: int32
+                maximum: 100
+                minimum: 1
+                type: integer
+            type: object
+          status:
+            description: ProvisionerStatus defines the observed state of Provisioner
+            properties:
+              conditions:
+                description: Conditions is the set of conditions required for this
+                  provisioner to scale its target, and indicates whether or not those
+                  conditions are met.
+                items:
+                  description: 'Condition defines a readiness condition for a Knative
+                    resource. See: https://github.com/kubernetes/community/blob/master/contributors/devel/sig-architecture/api-conventions.md#typical-status-properties'
+                  properties:
+                    lastTransitionTime:
+                      description: LastTransitionTime is the last time the condition
+                        transitioned from one status to another. We use VolatileTime
+                        in place of metav1.Time to exclude this from creating equality.Semantic
+                        differences (all other things held constant).
+                      type: string
+                    message:
+                      description: A human readable message indicating details about
+                        the transition.
+                      type: string
+                    reason:
+                      description: The reason for the condition's last transition.
+                      type: string
+                    severity:
+                      description: Severity with which to treat failures of this type
+                        of condition. When this is not specified, it defaults to Error.
+                      type: string
+                    status:
+                      description: Status of the condition, one of True, False, Unknown.
+                      type: string
+                    type:
+                      description: Type of condition.
+                      type: string
+                  required:
+                  - status
+                  - type
+                  type: object
+                type: array
+              lastScaleTime:
+                description: LastScaleTime is the last time the Provisioner scaled
+                  the number of nodes
+                format: date-time
+                type: string
+              resources:
+                additionalProperties:
+                  anyOf:
+                  - type: integer
+                  - type: string
+                  pattern: ^(\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))(([KMGTPE]i)|[numkMGTPE]|([eE](\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))))?$
+                  x-kubernetes-int-or-string: true
+                description: Resources is the list of resources that have been provisioned.
+                type: object
+            type: object
+        type: object
+    served: true
+    storage: true
+    subresources:
+      status: {}
+status:
+  acceptedNames:
+    kind: ""
+    plural: ""
+  conditions: []
+  storedVersions: []
+---
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  annotations:
+    controller-gen.kubebuilder.io/version: v0.8.0
+  creationTimestamp: null
+  name: awsnodetemplates.karpenter.k8s.aws
+spec:
+  group: karpenter.k8s.aws
+  names:
+    categories:
+    - karpenter
+    kind: AWSNodeTemplate
+    listKind: AWSNodeTemplateList
+    plural: awsnodetemplates
+    singular: awsnodetemplate
+  scope: Cluster
+  versions:
+  - name: v1alpha1
+    schema:
+      openAPIV3Schema:
+        description: AWSNodeTemplate is the Schema for the AWSNodeTemplate API
+        properties:
+          apiVersion:
+            description: 'APIVersion defines the versioned schema of this representation
+              of an object. Servers should convert recognized schemas to the latest
+              internal value, and may reject unrecognized values. More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#resources'
+            type: string
+          kind:
+            description: 'Kind is a string value representing the REST resource this
+              object represents. Servers may infer this from the endpoint the client
+              submits requests to. Cannot be updated. In CamelCase. More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#types-kinds'
+            type: string
+          metadata:
+            type: object
+          spec:
+            description: AWSNodeTemplateSpec is the top level specification for the
+              AWS Karpenter Provider. This will contain configuration necessary to
+              launch instances in AWS.
+            properties:
+              amiFamily:
+                description: AMIFamily is the AMI family that instances use.
+                type: string
+              amiSelector:
+                additionalProperties:
+                  type: string
+                description: AMISelector discovers AMIs to be used by Amazon EC2 tags.
+                type: object
+              apiVersion:
+                description: 'APIVersion defines the versioned schema of this representation
+                  of an object. Servers should convert recognized schemas to the latest
+                  internal value, and may reject unrecognized values. More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#resources'
+                type: string
+              blockDeviceMappings:
+                description: BlockDeviceMappings to be applied to provisioned nodes.
+                items:
+                  properties:
+                    deviceName:
+                      description: The device name (for example, /dev/sdh or xvdh).
+                      type: string
+                    ebs:
+                      description: EBS contains parameters used to automatically set
+                        up EBS volumes when an instance is launched.
+                      properties:
+                        deleteOnTermination:
+                          description: DeleteOnTermination indicates whether the EBS
+                            volume is deleted on instance termination.
+                          type: boolean
+                        encrypted:
+                          description: Encrypted indicates whether the EBS volume
+                            is encrypted. Encrypted volumes can only be attached to
+                            instances that support Amazon EBS encryption. If you are
+                            creating a volume from a snapshot, you can't specify an
+                            encryption value.
+                          type: boolean
+                        iops:
+                          description: "IOPS is the number of I/O operations per second
+                            (IOPS). For gp3, io1, and io2 volumes, this represents
+                            the number of IOPS that are provisioned for the volume.
+                            For gp2 volumes, this represents the baseline performance
+                            of the volume and the rate at which the volume accumulates
+                            I/O credits for bursting. \n The following are the supported
+                            values for each volume type: \n * gp3: 3,000-16,000 IOPS
+                            \n * io1: 100-64,000 IOPS \n * io2: 100-64,000 IOPS \n
+                            For io1 and io2 volumes, we guarantee 64,000 IOPS only
+                            for Instances built on the Nitro System (https://docs.aws.amazon.com/AWSEC2/latest/UserGuide/instance-types.html#ec2-nitro-instances).
+                            Other instance families guarantee performance up to 32,000
+                            IOPS. \n This parameter is supported for io1, io2, and
+                            gp3 volumes only. This parameter is not supported for
+                            gp2, st1, sc1, or standard volumes."
+                          format: int64
+                          type: integer
+                        kmsKeyID:
+                          description: KMSKeyID (ARN) of the symmetric Key Management
+                            Service (KMS) CMK used for encryption.
+                          type: string
+                        snapshotID:
+                          description: SnapshotID is the ID of an EBS snapshot
+                          type: string
+                        throughput:
+                          description: 'Throughput to provision for a gp3 volume,
+                            with a maximum of 1,000 MiB/s. Valid Range: Minimum value
+                            of 125. Maximum value of 1000.'
+                          format: int64
+                          type: integer
+                        volumeSize:
+                          anyOf:
+                          - type: integer
+                          - type: string
+                          description: "VolumeSize in GiBs. You must specify either
+                            a snapshot ID or a volume size. The following are the
+                            supported volumes sizes for each volume type: \n * gp2
+                            and gp3: 1-16,384 \n * io1 and io2: 4-16,384 \n * st1
+                            and sc1: 125-16,384 \n * standard: 1-1,024"
+                          pattern: ^(\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))(([KMGTPE]i)|[numkMGTPE]|([eE](\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))))?$
+                          x-kubernetes-int-or-string: true
+                        volumeType:
+                          description: VolumeType of the block device. For more information,
+                            see Amazon EBS volume types (https://docs.aws.amazon.com/AWSEC2/latest/UserGuide/EBSVolumeTypes.html)
+                            in the Amazon Elastic Compute Cloud User Guide.
+                          type: string
+                      type: object
+                  type: object
+                type: array
+              context:
+                description: Context is a Reserved field in EC2 APIs https://docs.aws.amazon.com/AWSEC2/latest/APIReference/API_CreateFleet.html
+                type: string
+              instanceProfile:
+                description: InstanceProfile is the AWS identity that instances use.
+                type: string
+              kind:
+                description: 'Kind is a string value representing the REST resource
+                  this object represents. Servers may infer this from the endpoint
+                  the client submits requests to. Cannot be updated. In CamelCase.
+                  More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#types-kinds'
+                type: string
+              launchTemplate:
+                description: 'LaunchTemplateName for the node. If not specified, a
+                  launch template will be generated. NOTE: This field is for specifying
+                  a custom launch template and is exposed in the Spec as `launchTemplate`
+                  for backwards compatibility.'
+                type: string
+              metadataOptions:
+                description: "MetadataOptions for the generated launch template of
+                  provisioned nodes. \n This specifies the exposure of the Instance
+                  Metadata Service to provisioned EC2 nodes. For more information,
+                  see Instance Metadata and User Data (https://docs.aws.amazon.com/AWSEC2/latest/UserGuide/ec2-instance-metadata.html)
+                  in the Amazon Elastic Compute Cloud User Guide. \n Refer to recommended,
+                  security best practices (https://aws.github.io/aws-eks-best-practices/security/docs/iam/#restrict-access-to-the-instance-profile-assigned-to-the-worker-node)
+                  for limiting exposure of Instance Metadata and User Data to pods.
+                  If omitted, defaults to httpEndpoint enabled, with httpProtocolIPv6
+                  disabled, with httpPutResponseLimit of 2, and with httpTokens required."
+                properties:
+                  httpEndpoint:
+                    description: "HTTPEndpoint enables or disables the HTTP metadata
+                      endpoint on provisioned nodes. If metadata options is non-nil,
+                      but this parameter is not specified, the default state is \"enabled\".
+                      \n If you specify a value of \"disabled\", instance metadata
+                      will not be accessible on the node."
+                    type: string
+                  httpProtocolIPv6:
+                    description: HTTPProtocolIPv6 enables or disables the IPv6 endpoint
+                      for the instance metadata service on provisioned nodes. If metadata
+                      options is non-nil, but this parameter is not specified, the
+                      default state is "disabled".
+                    type: string
+                  httpPutResponseHopLimit:
+                    description: HTTPPutResponseHopLimit is the desired HTTP PUT response
+                      hop limit for instance metadata requests. The larger the number,
+                      the further instance metadata requests can travel. Possible
+                      values are integers from 1 to 64. If metadata options is non-nil,
+                      but this parameter is not specified, the default value is 1.
+                    format: int64
+                    type: integer
+                  httpTokens:
+                    description: "HTTPTokens determines the state of token usage for
+                      instance metadata requests. If metadata options is non-nil,
+                      but this parameter is not specified, the default state is \"optional\".
+                      \n If the state is optional, one can choose to retrieve instance
+                      metadata with or without a signed token header on the request.
+                      If one retrieves the IAM role credentials without a token, the
+                      version 1.0 role credentials are returned. If one retrieves
+                      the IAM role credentials using a valid signed token, the version
+                      2.0 role credentials are returned. \n If the state is \"required\",
+                      one must send a signed token header with any instance metadata
+                      retrieval requests. In this state, retrieving the IAM role credentials
+                      always returns the version 2.0 credentials; the version 1.0
+                      credentials are not available."
+                    type: string
+                type: object
+              securityGroupSelector:
+                additionalProperties:
+                  type: string
+                description: SecurityGroups specify the names of the security groups.
+                type: object
+              subnetSelector:
+                additionalProperties:
+                  type: string
+                description: SubnetSelector discovers subnets by tags. A value of
+                  "" is a wildcard.
+                type: object
+              tags:
+                additionalProperties:
+                  type: string
+                description: Tags to be applied on ec2 resources like instances and
+                  launch templates.
+                type: object
+              userData:
+                description: UserData to be applied to the provisioned nodes. It must
+                  be in the appropriate format based on the AMIFamily in use. Karpenter
+                  will merge certain fields into this UserData to ensure nodes are
+                  being provisioned with the correct configuration.
+                type: string
+            type: object
+        type: object
+    served: true
+    storage: true
+    subresources:
+      status: {}
+status:
+  acceptedNames:
+    kind: ""
+    plural: ""
+  conditions: []
+  storedVersions: []
+---
+# Source: karpenter/templates/serviceaccount.yaml
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: karpenter
+  namespace: kube-system
+---
+# Source: karpenter/templates/webhook/deployment.yaml
+apiVersion: v1
+kind: Secret
+metadata:
+  name: karpenter-webhook-cert
+  namespace: kube-system
+data: {} # Injected by karpenter-webhook
+---
+# Source: karpenter/templates/100-config-logging.yaml
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: karpenter-config-logging
+  namespace: kube-system
+  labels:
+    app.kubernetes.io/part-of: karpenter
+data:
+  # https://github.com/uber-go/zap/blob/aa3e73ec0896f8b066ddf668597a02f89628ee50/config.go
+  zap-logger-config: |
+    {
+      "level": "debug",
+      "development": true,
+      "disableStacktrace": true,
+      "disableCaller": true,
+      "sampling": {
+        "initial": 100,
+        "thereafter": 100
+      },
+      "outputPaths": ["stdout"],
+      "errorOutputPaths": ["stderr"],
+      "encoding": "console",
+      "encoderConfig": {
+        "timeKey": "time",
+        "levelKey": "level",
+        "nameKey": "logger",
+        "callerKey": "caller",
+        "messageKey": "message",
+        "stacktraceKey": "stacktrace",
+        "levelEncoder": "capital",
+        "timeEncoder": "iso8601"
+      }
+    }
+  # Log level overrides
+  loglevel.controller: debug
+  loglevel.webhook: debug
+---
+# Source: karpenter/templates/configmap.yaml
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: karpenter-global-settings
+  namespace: kube-system
+  labels:
+    app.kubernetes.io/part-of: karpenter
+data:
+  "batchMaxDuration": "10s"
+  "batchIdleDuration": "1s"
+---
+# Source: karpenter/templates/controller/rbac.yaml
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: karpenter-controller
+rules:
+# Read
+- apiGroups: ["karpenter.sh"]
+  resources: ["provisioners", "provisioners/status"]
+  verbs: ["get", "list", "watch"]
+- apiGroups: ["karpenter.k8s.aws"]
+  resources: ["awsnodetemplates"]
+  verbs: ["get", "list", "watch"]
+- apiGroups: [""]
+  resources: ["pods", "nodes", "namespaces", "persistentvolumes", "persistentvolumeclaims", "replicationcontrollers"]
+  verbs: ["get", "list", "watch"]
+- apiGroups: ["storage.k8s.io"]
+  resources: ["storageclasses", "csinodes"]
+  verbs: ["get", "watch", "list"]
+- apiGroups: ["apps"]
+  resources: ["daemonsets", "deployments", "replicasets", "statefulsets"]
+  verbs: ["list", "watch"]
+- apiGroups: [ "policy" ]
+  resources: [ "poddisruptionbudgets" ]
+  verbs: [ "get", "list", "watch" ]
+# Write
+- apiGroups: ["karpenter.sh"]
+  resources: ["provisioners/status"]
+  verbs: ["create", "delete", "patch"]
+- apiGroups: [""]
+  resources: ["events"]
+  verbs: ["create", "patch"]
+- apiGroups: [""]
+  resources: ["nodes"]
+  verbs: ["create", "patch", "delete"]
+- apiGroups: [""]
+  resources: ["pods/eviction"]
+  verbs: ["create"]
+---
+# Source: karpenter/templates/webhook/rbac.yaml
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: karpenter-webhook
+rules:
+- apiGroups: ["admissionregistration.k8s.io"]
+  resources: ["validatingwebhookconfigurations", "mutatingwebhookconfigurations"]
+  verbs: ["get", "watch", "list"]
+- apiGroups: ["admissionregistration.k8s.io"]
+  resources: ["validatingwebhookconfigurations"]
+  verbs: ["update"]
+  resourceNames: ["validation.webhook.provisioners.karpenter.sh", "validation.webhook.config.karpenter.sh"]
+- apiGroups: ["admissionregistration.k8s.io"]
+  resources: ["mutatingwebhookconfigurations"]
+  verbs: ["update"]
+  resourceNames: ["defaulting.webhook.provisioners.karpenter.sh"]
+---
+# Source: karpenter/templates/controller/rbac.yaml
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: karpenter-controller
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: karpenter-controller
+subjects:
+- kind: ServiceAccount
+  name: karpenter
+  namespace: kube-system
+---
+# Source: karpenter/templates/webhook/rbac.yaml
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: karpenter-webhook
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: karpenter-webhook
+subjects:
+- kind: ServiceAccount
+  name: karpenter
+  namespace: kube-system
+---
+# Source: karpenter/templates/controller/rbac.yaml
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: karpenter-controller
+  namespace: kube-system
+rules:
+# Read
+- apiGroups: ["coordination.k8s.io"]
+  resources: ["leases"]
+  verbs: ["get", "watch"]
+- apiGroups: [""]
+  resources: ["configmaps", "namespaces", "secrets"]
+  verbs: ["get", "list", "watch"]
+# Write
+- apiGroups: [""]
+  resources: ["secrets"]
+  verbs: ["update"]
+  resourceNames: ["karpenter-webhook-cert"]
+- apiGroups: [""]
+  resources: ["configmaps"]
+  verbs: ["update", "patch", "delete"]
+  resourceNames:
+    - karpenter-global-settings
+    - karpenter-config-logging
+- apiGroups: ["coordination.k8s.io"]
+  resources: ["leases"]
+  verbs: ["patch", "update"]
+  resourceNames:
+    - "karpenter-leader-election"
+    - "webhook.configmapwebhook.00-of-01"
+    - "webhook.defaultingwebhook.00-of-01"
+    - "webhook.validationwebhook.00-of-01"
+    - "webhook.webhookcertificates.00-of-01"
+# Cannot specify resourceNames on create
+# https://kubernetes.io/docs/reference/access-authn-authz/rbac/#referring-to-resources
+- apiGroups: ["coordination.k8s.io"]
+  resources: ["leases"]
+  verbs: ["create"]
+- apiGroups: [""]
+  resources: ["configmaps"]
+  verbs: ["create"]
+---
+# Source: karpenter/templates/webhook/rbac.yaml
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: karpenter-webhook
+  namespace: kube-system
+rules:
+- apiGroups: [""]
+  resources: ["namespaces"]
+  verbs: ["get", "list", "watch"]
+- apiGroups: [""]
+  resources: ["secrets"]
+  verbs: ["get", "list", "watch", "update"]
+- apiGroups: ["coordination.k8s.io"]
+  resources: ["leases"]
+  verbs: ["get", "watch", "create", "update"]
+---
+# Source: karpenter/templates/controller/rbac.yaml
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: karpenter-controller
+  namespace: kube-system
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: karpenter-controller
+subjects:
+- kind: ServiceAccount
+  name: karpenter
+  namespace: kube-system
+---
+# Source: karpenter/templates/webhook/rbac.yaml
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: karpenter-webhook
+  namespace: kube-system
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: karpenter-webhook
+subjects:
+- kind: ServiceAccount
+  name: karpenter
+  namespace: kube-system
+---
+# Source: karpenter/templates/controller/deployment.yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: karpenter-metrics
+  namespace: kube-system
+spec:
+  ports:
+    - port: 8080
+      targetPort: http-metrics
+  selector:
+    karpenter: controller
+---
+# Source: karpenter/templates/webhook/deployment.yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: karpenter-webhook
+  namespace: kube-system
+spec:
+  ports:
+    - port: 443
+      targetPort: https-webhook
+  selector:
+    karpenter: webhook
+---
+# Source: karpenter/templates/controller/deployment.yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: karpenter-controller
+  namespace: kube-system
+spec:
+  replicas: {{ ControlPlaneControllerReplicas false }}
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      karpenter: controller
+  template:
+    metadata:
+      labels:
+        karpenter: controller
+        app.kubernetes.io/name: karpenter
+    spec:
+      affinity:
+        nodeAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+            nodeSelectorTerms:
+            - matchExpressions:
+              - key: node-role.kubernetes.io/control-plane
+                operator: Exists
+            - matchExpressions:
+              - key: node-role.kubernetes.io/master
+                operator: Exists
+      priorityClassName: system-cluster-critical
+      serviceAccountName: karpenter
+      dnsPolicy: Default
+      containers:
+        - name: controller
+          image: public.ecr.aws/karpenter/controller:v0.16.3
+          imagePullPolicy: IfNotPresent
+          resources:
+            limits:
+              memory: 1Gi
+            requests:
+              cpu: 500m
+              memory: 1Gi
+          ports:
+            - name: http-metrics
+              containerPort: 8080
+              protocol: TCP
+            - name: http
+              containerPort: 8081
+              protocol: TCP
+          livenessProbe:
+            initialDelaySeconds: 30
+            timeoutSeconds: 30
+            httpGet:
+              path: /healthz
+              port: http
+          readinessProbe:
+            timeoutSeconds: 30
+            httpGet:
+              path: /readyz
+              port: http
+          env:
+            {{ if not .Networking.AmazonVPC }}
+            - name: AWS_ENI_LIMITED_POD_DENSITY
+              value: "true"
+            {{ end }}
+            {{ if UsesInstanceIDForNodeName }}
+            - name: AWS_NODE_NAME_CONVENTION
+              value: "resource-name"
+            {{ end }}
+            - name: AWS_REGION
+              value: {{ Region }}
+            - name: CLUSTER_NAME
+              value: {{ ClusterName }}
+            - name: CLUSTER_ENDPOINT
+              value: https://{{ APIInternalName }}
+            - name: CONFIG_LOGGING_NAME
+              value: "karpenter-config-logging"
+            - name: KARPENTER_SERVICE
+              value: karpenter-webhook
+            - name: SYSTEM_NAMESPACE
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.namespace
+            - name: MEMORY_LIMIT
+              valueFrom:
+                resourceFieldRef:
+                  containerName: controller
+                  divisor: "0"
+                  resource: limits.memory
+      affinity:
+        nodeAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+            nodeSelectorTerms:
+            - matchExpressions:
+              - key: kubernetes.io/os
+                operator: In
+                values:
+                - linux
+              - key: karpenter.sh/provisioner-name
+                operator: DoesNotExist
+      tolerations:
+      - key: node-role.kubernetes.io/master
+        operator: Exists
+      - key: node-role.kubernetes.io/control-plane
+        operator: Exists
+      topologySpreadConstraints:
+      - maxSkew: 1
+        topologyKey: "topology.kubernetes.io/zone"
+        whenUnsatisfiable: ScheduleAnyway
+        labelSelector:
+          matchLabels:
+            karpenter: webhook
+      - maxSkew: 1
+        topologyKey: "kubernetes.io/hostname"
+        whenUnsatisfiable: DoNotSchedule
+        labelSelector:
+          matchLabels:
+            karpenter: webhook
+      nodeSelector: null
+
+---
+# Source: karpenter/templates/webhook/deployment.yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: karpenter-webhook
+  namespace: kube-system
+spec:
+  replicas: {{ ControlPlaneControllerReplicas false }}
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      karpenter: webhook
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: karpenter
+        karpenter: webhook
+    spec:
+      priorityClassName: system-cluster-critical
+      serviceAccountName: karpenter
+      dnsPolicy: Default
+      containers:
+        - name: webhook
+          image: public.ecr.aws/karpenter/webhook:v0.16.3
+          imagePullPolicy: IfNotPresent
+          args:
+            - -port=8443
+          resources: 
+            limits:
+              cpu: 100m
+              memory: 50Mi
+            requests:
+              cpu: 100m
+              memory: 50Mi
+          ports:
+            - name: https-webhook
+              containerPort: 8443
+              protocol: TCP
+          livenessProbe:
+            initialDelaySeconds: 30
+            httpGet:
+              scheme: HTTPS
+              port: https-webhook
+          readinessProbe:
+            httpGet:
+              scheme: HTTPS
+              port: https-webhook
+          startupProbe:
+            httpGet:
+              scheme: HTTPS
+              port: https-webhook
+            failureThreshold: 6
+          env:
+            - name: AWS_REGION
+              value: {{ Region }}
+            - name: CLUSTER_NAME
+              value: {{ ClusterName }}
+            - name: KUBERNETES_MIN_VERSION
+              value: "1.19.0-0"
+            - name: CLUSTER_ENDPOINT
+              value: https://{{ APIInternalName }}
+            - name: CONFIG_LOGGING_NAME
+              value: "karpenter-config-logging"
+            - name: KARPENTER_SERVICE
+              value: karpenter-webhook
+            - name: SYSTEM_NAMESPACE
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.namespace
+      affinity:
+        nodeAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+            nodeSelectorTerms:
+            - matchExpressions:
+              - key: kubernetes.io/os
+                operator: In
+                values:
+                - linux
+              - key: karpenter.sh/provisioner-name
+                operator: DoesNotExist
+              - key: node-role.kubernetes.io/control-plane
+                operator: Exists
+            - matchExpressions:
+              - key: kubernetes.io/os
+                operator: In
+                values:
+                - linux
+              - key: karpenter.sh/provisioner-name
+                operator: DoesNotExist
+              - key: node-role.kubernetes.io/master
+                operator: Exists
+      tolerations:
+      - key: node-role.kubernetes.io/master
+        operator: Exists
+      - key: node-role.kubernetes.io/control-plane
+        operator: Exists
+      topologySpreadConstraints:
+      - maxSkew: 1
+        topologyKey: topology.kubernetes.io/zone
+        whenUnsatisfiable: ScheduleAnyway
+        labelSelector:
+          matchLabels:
+            karpenter: webhook
+      - maxSkew: 1
+        topologyKey: "kubernetes.io/hostname"
+        whenUnsatisfiable: DoNotSchedule
+        labelSelector:
+          matchLabels:
+            karpenter: webhook
+      nodeSelector: null
+---
+# Source: karpenter/templates/webhook/webhooks.yaml
+apiVersion: admissionregistration.k8s.io/v1
+kind: MutatingWebhookConfiguration
+metadata:
+  name: defaulting.webhook.provisioners.karpenter.sh
+webhooks:
+- admissionReviewVersions: ["v1"]
+  clientConfig:
+    service:
+      name: karpenter-webhook
+      namespace: 'kube-system'
+  failurePolicy: Fail
+  sideEffects: None
+  name: defaulting.webhook.provisioners.karpenter.sh
+  rules:
+  - apiGroups:
+    - karpenter.k8s.aws
+    apiVersions:
+    - v1alpha1
+    operations:
+    - CREATE
+    - UPDATE
+    resources:
+    - awsnodetemplates
+    - awsnodetemplates/status
+    scope: '*'
+  - apiGroups:
+    - karpenter.sh
+    apiVersions:
+    - v1alpha5
+    resources:
+    - provisioners
+    - provisioners/status
+    operations:
+    - CREATE
+    - UPDATE
+---
+# Source: karpenter/templates/webhook/webhooks.yaml
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingWebhookConfiguration
+metadata:
+  name: validation.webhook.provisioners.karpenter.sh
+webhooks:
+- admissionReviewVersions: ["v1"]
+  clientConfig:
+    service:
+      name: karpenter-webhook
+      namespace: 'kube-system'
+  failurePolicy: Fail
+  sideEffects: None
+  name: validation.webhook.provisioners.karpenter.sh
+  rules:
+  - apiGroups:
+    - karpenter.k8s.aws
+    apiVersions:
+    - v1alpha1
+    operations:
+    - CREATE
+    - UPDATE
+    - DELETE
+    resources:
+    - awsnodetemplates
+    - awsnodetemplates/status
+    scope: '*'
+  - apiGroups:
+    - karpenter.sh
+    apiVersions:
+    - v1alpha5
+    resources:
+    - provisioners
+    - provisioners/status
+    operations:
+    - CREATE
+    - UPDATE
+    - DELETE
+---
+# Source: karpenter/templates/webhook/webhooks.yaml
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingWebhookConfiguration
+metadata:
+  name: validation.webhook.config.karpenter.sh
+webhooks:
+- admissionReviewVersions: ["v1"]
+  clientConfig:
+    service:
+      name: karpenter-webhook
+      namespace: 'kube-system'
+  failurePolicy: Fail
+  sideEffects: None
+  name: validation.webhook.config.karpenter.sh
+  objectSelector:
+    matchLabels:
+      app.kubernetes.io/part-of: karpenter
+---
+# Source: karpenter/templates/poddisruptionbudget.yaml
+{{ if IsKubernetesGTE "1.23" }}
+apiVersion: policy/v1
+{{ else }}
+apiVersion: policy/v1beta1
+{{ end }}
+kind: PodDisruptionBudget
+metadata:
+  name: karpenter
+spec:
+  maxUnavailable: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: karpenter
+
+{{ range $name, $spec := GetNodeInstanceGroups }}
+{{ if eq $spec.Manager "Karpenter" }}
+---
+apiVersion: karpenter.sh/v1alpha5
+kind: Provisioner
+metadata:
+  name: {{ $name }}
+spec:
+  consolidation:
+    enabled: true
+{{ with $spec.Kubelet }}
+{{ if or .MaxPods .SystemReserved .KubeReserved }}
+  kubeletConfiguration:
+    {{ if .MaxPods }}
+    maxPods: {{ .MaxPods }}
+    {{ end }}
+    {{ if .SystemReserved }}
+    systemReserved:
+      {{ range $key, $val := .SystemReserved}}
+      {{ $key }}: "{{ $val }}"
+      {{ end }}
+    {{ end }}
+    {{ if .KubeReserved }}
+    kubeReserved:
+      {{ range $key, $val := .KubeReserved}}
+      {{ $key }}: "{{ $val }}"
+      {{ end }}
+    {{ end }}
+{{ end }}
+{{ end }}
+  requirements:
+    - key: karpenter.sh/capacity-type
+      operator: In
+      values: ["spot", "ondemand"]
+    - key: kubernetes.io/arch
+      operator: In
+      values: ["{{ ArchitectureOfAMI $spec.Image }}"]
+    - key: "node.kubernetes.io/instance-type"
+      operator: In
+      values:
+      {{ range $type := KarpenterInstanceTypes $spec }}
+      - {{ $type }}
+      {{ end }}
+{{ with $spec.Taints }}
+  taints:
+    {{ range $taintString := $spec.Taints }}
+    {{ $taint := ParseTaint $taintString }}
+  - key: {{ $taint.key }}
+    effect: {{ $taint.effect }}
+    {{ if $taint.value }}
+    value: "{{ $taint.value }}"
+    {{ end }}
+    {{ end }}
+{{ end }}
+{{ if $.ExternalCloudControllerManager }}
+  startupTaints:
+    - key: node.cloudprovider.kubernetes.io/uninitialized
+      effect: NoSchedule
+{{ end }}
+{{ with $spec.NodeLabels }}
+  labels:
+  {{ range $key, $value := . }}
+    {{ $key }}: "{{ $value }}"
+  {{ end }}
+{{ end }}
+  provider:
+    launchTemplate: {{ $name }}.{{ ClusterName }}
+    subnetSelector:
+      kops.k8s.io/instance-group/{{ $name }}: "*"
+      kubernetes.io/cluster/{{ ClusterName }}: "*"
+{{ end }}
+{{ end }}

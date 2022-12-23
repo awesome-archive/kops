@@ -1,5 +1,5 @@
 /*
-Copyright 2018 The Kubernetes Authors.
+Copyright 2019 The Kubernetes Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -24,6 +24,17 @@ import (
 	"k8s.io/kops/upup/pkg/fi"
 )
 
+func TestSetClusterBadInput(t *testing.T) {
+	fields := []string{
+		"bad-set-input",
+	}
+
+	err := SetClusterFields(fields, &kops.Cluster{})
+	if err == nil {
+		t.Errorf("expected a field parsing error, but received none")
+	}
+}
+
 func TestSetClusterFields(t *testing.T) {
 	grid := []struct {
 		Fields []string
@@ -46,7 +57,221 @@ func TestSetClusterFields(t *testing.T) {
 					KubernetesVersion: "1.8.2",
 					Kubelet: &kops.KubeletConfigSpec{
 						AuthorizationMode:          "Webhook",
-						AuthenticationTokenWebhook: fi.Bool(true),
+						AuthenticationTokenWebhook: fi.PtrTo(true),
+					},
+				},
+			},
+		},
+		{
+			Fields: []string{
+				"spec.api.dns=",
+			},
+			Input: kops.Cluster{
+				Spec: kops.ClusterSpec{},
+			},
+			Output: kops.Cluster{
+				Spec: kops.ClusterSpec{
+					API: kops.APISpec{
+						DNS: &kops.DNSAccessSpec{},
+					},
+				},
+			},
+		},
+		{
+			Fields: []string{"spec.kubelet.authorizationMode=Webhook"},
+			Output: kops.Cluster{
+				Spec: kops.ClusterSpec{
+					Kubelet: &kops.KubeletConfigSpec{
+						AuthorizationMode: "Webhook",
+					},
+				},
+			},
+		},
+		{
+			Fields: []string{"spec.kubelet.authenticationTokenWebhook=false"},
+			Output: kops.Cluster{
+				Spec: kops.ClusterSpec{
+					Kubelet: &kops.KubeletConfigSpec{
+						AuthenticationTokenWebhook: fi.PtrTo(false),
+					},
+				},
+			},
+		},
+		{
+			Fields: []string{"spec.docker.selinuxEnabled=true"},
+			Output: kops.Cluster{
+				Spec: kops.ClusterSpec{
+					Docker: &kops.DockerConfig{
+						SelinuxEnabled: fi.PtrTo(true),
+					},
+				},
+			},
+		},
+		{
+			Fields: []string{"spec.kubernetesVersion=v1.2.3"},
+			Output: kops.Cluster{
+				Spec: kops.ClusterSpec{
+					KubernetesVersion: "v1.2.3",
+				},
+			},
+		},
+		{
+			Fields: []string{"spec.api.publicName=api.example.com"},
+			Output: kops.Cluster{
+				Spec: kops.ClusterSpec{
+					API: kops.APISpec{
+						PublicName: "api.example.com",
+					},
+				},
+			},
+		},
+		{
+			Fields: []string{"spec.kubeDNS.provider=CoreDNS"},
+			Output: kops.Cluster{
+				Spec: kops.ClusterSpec{
+					KubeDNS: &kops.KubeDNSConfig{
+						Provider: "CoreDNS",
+					},
+				},
+			},
+		},
+		{
+			Fields: []string{
+				"cluster.spec.nodePortAccess=10.0.0.0/8,192.168.0.0/16",
+			},
+			Input: kops.Cluster{},
+			Output: kops.Cluster{
+				Spec: kops.ClusterSpec{
+					NodePortAccess: []string{"10.0.0.0/8", "192.168.0.0/16"},
+				},
+			},
+		},
+		{
+			Fields: []string{
+				"cluster.spec.etcdClusters[*].version=v3.2.1",
+			},
+			Input: kops.Cluster{
+				Spec: kops.ClusterSpec{
+					EtcdClusters: []kops.EtcdClusterSpec{
+						{Name: "one", Version: "v2.0.0"},
+						{Name: "two"},
+					},
+				},
+			},
+			Output: kops.Cluster{
+				Spec: kops.ClusterSpec{
+					EtcdClusters: []kops.EtcdClusterSpec{
+						{Name: "one", Version: "v3.2.1"},
+						{Name: "two", Version: "v3.2.1"},
+					},
+				},
+			},
+		},
+		{
+			Fields: []string{
+				"cluster.spec.etcdClusters[*].image=etcd-manager:v1.2.3",
+			},
+			Input: kops.Cluster{
+				Spec: kops.ClusterSpec{
+					EtcdClusters: []kops.EtcdClusterSpec{
+						{Name: "one", Image: "foo"},
+						{Name: "two"},
+					},
+				},
+			},
+			Output: kops.Cluster{
+				Spec: kops.ClusterSpec{
+					EtcdClusters: []kops.EtcdClusterSpec{
+						{Name: "one", Image: "etcd-manager:v1.2.3"},
+						{Name: "two", Image: "etcd-manager:v1.2.3"},
+					},
+				},
+			},
+		},
+		{
+			Fields: []string{
+				"cluster.spec.networking.cilium.ipam=on",
+			},
+			Input: kops.Cluster{},
+			Output: kops.Cluster{
+				Spec: kops.ClusterSpec{
+					Networking: kops.NetworkingSpec{
+						Cilium: &kops.CiliumNetworkingSpec{
+							IPAM: "on",
+						},
+					},
+				},
+			},
+		},
+		{
+			Fields: []string{
+				"cluster.spec.networking.cilium.enableHostReachableServices=true",
+			},
+			Input: kops.Cluster{},
+			Output: kops.Cluster{
+				Spec: kops.ClusterSpec{
+					Networking: kops.NetworkingSpec{
+						Cilium: &kops.CiliumNetworkingSpec{
+							EnableHostReachableServices: true,
+						},
+					},
+				},
+			},
+		},
+		{
+			Fields: []string{
+				"cluster.spec.networking.cilium.enableNodePort=true",
+			},
+			Input: kops.Cluster{},
+			Output: kops.Cluster{
+				Spec: kops.ClusterSpec{
+					Networking: kops.NetworkingSpec{
+						Cilium: &kops.CiliumNetworkingSpec{
+							EnableNodePort: true,
+						},
+					},
+				},
+			},
+		},
+		{
+			Fields: []string{
+				"cluster.spec.networking.cilium.masquerade=false",
+			},
+			Input: kops.Cluster{},
+			Output: kops.Cluster{
+				Spec: kops.ClusterSpec{
+					Networking: kops.NetworkingSpec{
+						Cilium: &kops.CiliumNetworkingSpec{
+							Masquerade: fi.PtrTo(false),
+						},
+					},
+				},
+			},
+		},
+		{
+			Fields: []string{
+				"cluster.spec.kubeProxy.enabled=true",
+			},
+			Input: kops.Cluster{},
+			Output: kops.Cluster{
+				Spec: kops.ClusterSpec{
+					KubeProxy: &kops.KubeProxyConfig{
+						Enabled: fi.PtrTo(true),
+					},
+				},
+			},
+		},
+		{
+			Fields: []string{
+				"cluster.spec.networking.cilium.agentPrometheusPort=1234",
+			},
+			Input: kops.Cluster{},
+			Output: kops.Cluster{
+				Spec: kops.ClusterSpec{
+					Networking: kops.NetworkingSpec{
+						Cilium: &kops.CiliumNetworkingSpec{
+							AgentPrometheusPort: 1234,
+						},
 					},
 				},
 			},
@@ -54,10 +279,59 @@ func TestSetClusterFields(t *testing.T) {
 	}
 
 	for _, g := range grid {
-		var igs []*kops.InstanceGroup
 		c := g.Input
 
-		err := SetClusterFields(g.Fields, &c, igs)
+		err := SetClusterFields(g.Fields, &c)
+		if err != nil {
+			t.Errorf("unexpected error from setClusterFields %v: %v", g.Fields, err)
+			continue
+		}
+
+		if !reflect.DeepEqual(c, g.Output) {
+			t.Errorf("unexpected output from setClusterFields %v.  expected=%v, actual=%v", g.Fields, g.Output, c)
+			continue
+		}
+
+	}
+}
+
+func TestSetCiliumFields(t *testing.T) {
+	grid := []struct {
+		Fields []string
+		Input  kops.Cluster
+		Output kops.Cluster
+	}{
+		{
+			Fields: []string{
+				"cluster.spec.networking.cilium.ipam=eni",
+				"cluster.spec.networking.cilium.enableNodePort=true",
+				"cluster.spec.networking.cilium.masquerade=false",
+				"cluster.spec.kubeProxy.enabled=false",
+			},
+			Input: kops.Cluster{
+				Spec: kops.ClusterSpec{},
+			},
+			Output: kops.Cluster{
+				Spec: kops.ClusterSpec{
+					KubeProxy: &kops.KubeProxyConfig{
+						Enabled: fi.PtrTo(false),
+					},
+					Networking: kops.NetworkingSpec{
+						Cilium: &kops.CiliumNetworkingSpec{
+							IPAM:           "eni",
+							EnableNodePort: true,
+							Masquerade:     fi.PtrTo(false),
+						},
+					},
+				},
+			},
+		},
+	}
+
+	for _, g := range grid {
+		c := g.Input
+
+		err := SetClusterFields(g.Fields, &c)
 		if err != nil {
 			t.Errorf("unexpected error from setClusterFields %v: %v", g.Fields, err)
 			continue

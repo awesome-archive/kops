@@ -1,5 +1,5 @@
 /*
-Copyright 2016 The Kubernetes Authors.
+Copyright 2019 The Kubernetes Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -21,6 +21,8 @@ import (
 	"strings"
 
 	"google.golang.org/api/googleapi"
+	"k8s.io/klog/v2"
+	"k8s.io/kops/pkg/truncate"
 )
 
 func IsNotFound(err error) bool {
@@ -30,7 +32,6 @@ func IsNotFound(err error) bool {
 	}
 
 	// We could also check for Errors[].Resource == "notFound"
-	//klog.Info("apiErr: %v", apiErr)
 
 	return apiErr.Code == 404
 }
@@ -48,10 +49,69 @@ func IsNotReady(err error) bool {
 	return false
 }
 
+// ClusterPrefixedName returns a cluster-prefixed name, with a maxLength
+func ClusterPrefixedName(objectName string, clusterName string, maxLength int) string {
+	suffix := "-" + objectName
+	prefixLength := maxLength - len(suffix)
+	if prefixLength < 10 {
+		klog.Fatalf("cannot construct a reasonable object name of length %d with a suffix of length %d (%q)", maxLength, len(suffix), suffix)
+	}
+
+	// GCE does not support . in tags / names
+	safeClusterName := strings.Replace(clusterName, ".", "-", -1)
+
+	opt := truncate.TruncateStringOptions{
+		MaxLength:     prefixLength,
+		AlwaysAddHash: false,
+		HashLength:    6,
+	}
+	prefix := truncate.TruncateString(safeClusterName, opt)
+
+	return prefix + suffix
+}
+
+// ClusterSuffixedName returns a cluster-suffixed name, with a maxLength
+func ClusterSuffixedName(objectName string, clusterName string, maxLength int) string {
+	prefix := objectName + "-"
+	suffixLength := maxLength - len(prefix)
+	if suffixLength < 10 {
+		klog.Fatalf("cannot construct a reasonable object name of length %d with a prefix of length %d (%q)", maxLength, len(prefix), prefix)
+	}
+
+	// GCE does not support . in tags / names
+	safeClusterName := strings.Replace(clusterName, ".", "-", -1)
+
+	opt := truncate.TruncateStringOptions{
+		MaxLength:     suffixLength,
+		AlwaysAddHash: false,
+		HashLength:    6,
+	}
+	suffix := truncate.TruncateString(safeClusterName, opt)
+
+	return prefix + suffix
+}
+
+// SafeClusterName returns a safe cluster name
+// deprecated: prefer ClusterSuffixedName
 func SafeClusterName(clusterName string) string {
 	// GCE does not support . in tags / names
 	safeClusterName := strings.Replace(clusterName, ".", "-", -1)
 	return safeClusterName
+}
+
+// SafeTruncatedClusterName returns a safe and truncated cluster name
+func SafeTruncatedClusterName(clusterName string, maxLength int) string {
+	// GCE does not support . in tags / names
+	safeClusterName := strings.Replace(clusterName, ".", "-", -1)
+
+	opt := truncate.TruncateStringOptions{
+		MaxLength:     maxLength,
+		AlwaysAddHash: false,
+		HashLength:    6,
+	}
+	truncatedClusterName := truncate.TruncateString(safeClusterName, opt)
+
+	return truncatedClusterName
 }
 
 // SafeObjectName returns the object name and cluster name escaped for GCE
@@ -60,6 +120,11 @@ func SafeObjectName(name string, clusterName string) string {
 
 	// TODO: If the cluster name > some max size (32?) we should curtail it
 	return SafeClusterName(gceName)
+}
+
+// ServiceAccountName returns the cluster-suffixed service-account name
+func ServiceAccountName(name string, clusterName string) string {
+	return ClusterSuffixedName(name, clusterName, 30)
 }
 
 // LastComponent returns the last component of a URL, i.e. anything after the last slash

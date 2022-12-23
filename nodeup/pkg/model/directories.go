@@ -1,5 +1,5 @@
 /*
-Copyright 2016 The Kubernetes Authors.
+Copyright 2019 The Kubernetes Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -17,9 +17,11 @@ limitations under the License.
 package model
 
 import (
-	"k8s.io/kops/nodeup/pkg/distros"
+	"path/filepath"
+
 	"k8s.io/kops/upup/pkg/fi"
 	"k8s.io/kops/upup/pkg/fi/nodeup/nodetasks"
+	"k8s.io/kops/util/pkg/distributions"
 )
 
 // DirectoryBuilder creates required directories
@@ -27,24 +29,135 @@ type DirectoryBuilder struct {
 	*NodeupModelContext
 }
 
-var _ fi.ModelBuilder = &DirectoryBuilder{}
+var _ fi.NodeupModelBuilder = &DirectoryBuilder{}
 
 // Build is responsible for specific directories are created - os dependent
-func (b *DirectoryBuilder) Build(c *fi.ModelBuilderContext) error {
-	if b.Distribution == distros.DistributionContainerOS {
+func (b *DirectoryBuilder) Build(c *fi.NodeupModelBuilderContext) error {
+	if b.Distribution == distributions.DistributionContainerOS {
 		dirname := "/home/kubernetes/bin"
 
 		c.AddTask(&nodetasks.File{
 			Path: dirname,
 			Type: nodetasks.FileType_Directory,
 			Mode: s("0755"),
+		})
 
-			OnChangeExecute: [][]string{
-				{"/bin/mount", "--bind", dirname, dirname},
-				{"/bin/mount", "-o", "remount,exec", dirname},
-			},
+		c.AddTask(&nodetasks.BindMount{
+			Source:     dirname,
+			Mountpoint: dirname,
+			Options:    []string{"exec"},
+		})
+	}
+
+	// We try to put things into /opt/kops
+	// On some OSes though, /opt/ is not writeable, and we can't even create the mountpoint
+	if b.Distribution == distributions.DistributionContainerOS {
+		// Ensure /var/lib/kubelet has suitable permissions (it's used for emptyDirs, in particular)
+		c.EnsureTask(&nodetasks.File{
+			Path: "/var/lib/kubelet",
+			Type: nodetasks.FileType_Directory,
+			Mode: s("0755"),
+		})
+
+		c.AddTask(&nodetasks.BindMount{
+			Source:     "/var/lib/kubelet",
+			Mountpoint: "/var/lib/kubelet",
+			Options:    []string{"exec", "suid", "dev"},
+		})
+
+		// Need exec permissions on /home/kubernetes/flexvolume, used for flexvolume drivers
+		c.EnsureTask(&nodetasks.File{
+			Path: "/home/kubernetes/flexvolume",
+			Type: nodetasks.FileType_Directory,
+			Mode: s("0755"),
+		})
+
+		c.AddTask(&nodetasks.BindMount{
+			Source:     "/home/kubernetes/flexvolume",
+			Mountpoint: "/home/kubernetes/flexvolume",
+			Options:    []string{"exec", "nosuid", "nodev"},
+		})
+
+		// Create /opt
+		src := "/mnt/stateful_partition/opt/"
+
+		c.AddTask(&nodetasks.File{
+			Path: src,
+			Type: nodetasks.FileType_Directory,
+			Mode: s("0755"),
+		})
+
+		// Rebuild things we are masking by mounting /opt on top
+		c.AddTask(&nodetasks.File{
+			Path: filepath.Join(src, "google"),
+			Type: nodetasks.FileType_Directory,
+			Mode: s("0755"),
+		})
+		c.AddTask(&nodetasks.File{
+			Path: filepath.Join(src, "google", "crash-reporter"),
+			Type: nodetasks.FileType_Directory,
+			Mode: s("0755"),
+		})
+		c.AddTask(&nodetasks.File{
+			Path:     filepath.Join(src, "google", "crash-reporter", "filter"),
+			Type:     nodetasks.FileType_File,
+			Mode:     s("0755"),
+			Contents: fi.NewStringResource(cosCrashFilter),
+		})
+
+		// Precreate the directory that will be /opt/kops, so we can bind remount it
+		c.AddTask(&nodetasks.File{
+			Path: filepath.Join(src, "kops"),
+			Type: nodetasks.FileType_Directory,
+			Mode: s("0755"),
+		})
+		c.AddTask(&nodetasks.File{
+			Path: filepath.Join(src, "kops", "bin"),
+			Type: nodetasks.FileType_Directory,
+			Mode: s("0755"),
+		})
+
+		c.AddTask(&nodetasks.BindMount{
+			Source:     src,
+			Mountpoint: "/opt",
+			Options:    []string{"ro"},
+		})
+
+		c.AddTask(&nodetasks.BindMount{
+			Source:     filepath.Join(src, "kops", "bin"),
+			Mountpoint: "/opt/kops/bin",
+			Options:    []string{"exec", "nosuid", "nodev"},
+		})
+
+		// /opt/cni and /opt/cni/bin
+		c.AddTask(&nodetasks.File{
+			Path: filepath.Join(src, "cni"),
+			Type: nodetasks.FileType_Directory,
+			Mode: s("0755"),
+		})
+		c.AddTask(&nodetasks.File{
+			Path: filepath.Join(src, "cni", "bin"),
+			Type: nodetasks.FileType_Directory,
+			Mode: s("0755"),
+		})
+
+		c.AddTask(&nodetasks.BindMount{
+			Source:     filepath.Join(src, "cni", "bin"),
+			Mountpoint: "/opt/cni/bin",
+			Options:    []string{"exec", "nosuid", "nodev"},
 		})
 	}
 
 	return nil
 }
+
+// cosCrashFilter is used on COS to prevent userspace crash-reporting
+// This is the one thing we need from /opt
+const cosCrashFilter = `#!/bin/bash
+# Copyright 2016 The Chromium OS Authors. All rights reserved.
+# Use of this source code is governed by a BSD-style license that can be
+# found in the LICENSE file.
+
+# Do no collect any userland crash.
+exit 1
+`

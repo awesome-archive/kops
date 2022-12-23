@@ -1,5 +1,5 @@
 /*
-Copyright 2018 The Kubernetes Authors.
+Copyright 2019 The Kubernetes Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -21,23 +21,23 @@ import (
 
 	"github.com/gophercloud/gophercloud/openstack/networking/v2/extensions/layer3/routers"
 	"github.com/gophercloud/gophercloud/openstack/networking/v2/ports"
-	"k8s.io/klog"
+	"k8s.io/klog/v2"
 	"k8s.io/kops/upup/pkg/fi"
 	"k8s.io/kops/upup/pkg/fi/cloudup/openstack"
 )
 
-//go:generate fitask -type=RouterInterface
+// +kops:fitask
 type RouterInterface struct {
 	ID        *string
 	Name      *string
 	Router    *Router
 	Subnet    *Subnet
-	Lifecycle *fi.Lifecycle
+	Lifecycle fi.Lifecycle
 }
 
 // GetDependencies returns the dependencies of the RouterInterface task
-func (e *RouterInterface) GetDependencies(tasks map[string]fi.Task) []fi.Task {
-	var deps []fi.Task
+func (e *RouterInterface) GetDependencies(tasks map[string]fi.CloudupTask) []fi.CloudupTask {
+	var deps []fi.CloudupTask
 	for _, task := range tasks {
 		if _, ok := task.(*Router); ok {
 			deps = append(deps, task)
@@ -55,12 +55,12 @@ func (i *RouterInterface) CompareWithID() *string {
 	return i.ID
 }
 
-func (i *RouterInterface) Find(context *fi.Context) (*RouterInterface, error) {
-	cloud := context.Cloud.(openstack.OpenstackCloud)
+func (i *RouterInterface) Find(context *fi.CloudupContext) (*RouterInterface, error) {
+	cloud := context.T.Cloud.(openstack.OpenstackCloud)
 	opt := ports.ListOpts{
-		NetworkID: fi.StringValue(i.Subnet.Network.ID),
-		DeviceID:  fi.StringValue(i.Router.ID),
-		ID:        fi.StringValue(i.ID),
+		NetworkID: fi.ValueOf(i.Subnet.Network.ID),
+		DeviceID:  fi.ValueOf(i.Router.ID),
+		ID:        fi.ValueOf(i.ID),
 	}
 	ps, err := cloud.ListPorts(opt)
 	if err != nil {
@@ -72,15 +72,15 @@ func (i *RouterInterface) Find(context *fi.Context) (*RouterInterface, error) {
 
 	var actual *RouterInterface
 
-	subnetID := fi.StringValue(i.Subnet.ID)
+	subnetID := fi.ValueOf(i.Subnet.ID)
 	for _, p := range ps {
 		for _, ip := range p.FixedIPs {
 			if ip.SubnetID == subnetID {
 				if actual != nil {
-					return nil, fmt.Errorf("find multiple interfaces which subnet:%s attach to", subnetID)
+					return nil, fmt.Errorf("found multiple interfaces which subnet:%s attach to", subnetID)
 				}
 				actual = &RouterInterface{
-					ID:        fi.String(p.ID),
+					ID:        fi.PtrTo(p.ID),
 					Name:      i.Name,
 					Router:    i.Router,
 					Subnet:    i.Subnet,
@@ -93,11 +93,11 @@ func (i *RouterInterface) Find(context *fi.Context) (*RouterInterface, error) {
 	return actual, nil
 }
 
-func (i *RouterInterface) Run(context *fi.Context) error {
-	return fi.DefaultDeltaRunMethod(i, context)
+func (i *RouterInterface) Run(context *fi.CloudupContext) error {
+	return fi.CloudupDefaultDeltaRunMethod(i, context)
 }
 
-func (_ *RouterInterface) CheckChanges(a, e, changes *RouterInterface) error {
+func (*RouterInterface) CheckChanges(a, e, changes *RouterInterface) error {
 	if a == nil {
 		if e.Router == nil {
 			return fi.RequiredField("Router")
@@ -121,8 +121,8 @@ func (_ *RouterInterface) CheckChanges(a, e, changes *RouterInterface) error {
 
 func (_ *RouterInterface) RenderOpenstack(t *openstack.OpenstackAPITarget, a, e, changes *RouterInterface) error {
 	if a == nil {
-		routerID := fi.StringValue(e.Router.ID)
-		subnetID := fi.StringValue(e.Subnet.ID)
+		routerID := fi.ValueOf(e.Router.ID)
+		subnetID := fi.ValueOf(e.Subnet.ID)
 		klog.V(2).Infof("Creating RouterInterface for router:%s and subnet:%s", routerID, subnetID)
 
 		opt := routers.AddInterfaceOpts{SubnetID: subnetID}
@@ -131,11 +131,11 @@ func (_ *RouterInterface) RenderOpenstack(t *openstack.OpenstackAPITarget, a, e,
 			return fmt.Errorf("Error creating router interface: %v", err)
 		}
 
-		e.ID = fi.String(v.PortID)
+		e.ID = fi.PtrTo(v.PortID)
 		klog.V(2).Infof("Creating a new Openstack router interface, id=%s", v.PortID)
 		return nil
 	}
 	e.ID = a.ID
-	klog.V(2).Infof("Using an existing Openstack router interface, id=%s", fi.StringValue(e.ID))
+	klog.V(2).Infof("Using an existing Openstack router interface, id=%s", fi.ValueOf(e.ID))
 	return nil
 }

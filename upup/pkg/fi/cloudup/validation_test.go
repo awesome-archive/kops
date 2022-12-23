@@ -1,5 +1,5 @@
 /*
-Copyright 2016 The Kubernetes Authors.
+Copyright 2019 The Kubernetes Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -17,48 +17,29 @@ limitations under the License.
 package cloudup
 
 import (
+	"context"
 	"fmt"
 	"strings"
 	"testing"
 
-	"k8s.io/apimachinery/pkg/util/sets"
-	"k8s.io/klog"
+	"k8s.io/klog/v2"
 	api "k8s.io/kops/pkg/apis/kops"
 	"k8s.io/kops/pkg/apis/kops/validation"
 	"k8s.io/kops/upup/pkg/fi"
 )
 
-const MockAWSRegion = "us-mock-1"
+const testAWSRegion = "us-test-1"
 
 func buildDefaultCluster(t *testing.T) *api.Cluster {
-	c := buildMinimalCluster()
+	ctx := context.TODO()
+	cloud, c := buildMinimalCluster()
 
-	err := PerformAssignments(c)
+	err := PerformAssignments(c, cloud)
 	if err != nil {
 		t.Fatalf("error from PerformAssignments: %v", err)
 	}
 
-	if len(c.Spec.EtcdClusters) == 0 {
-		zones := sets.NewString()
-		for _, z := range c.Spec.Subnets {
-			zones.Insert(z.Zone)
-		}
-		etcdZones := zones.List()
-
-		for _, etcdCluster := range EtcdClusters {
-			etcd := &api.EtcdClusterSpec{}
-			etcd.Name = etcdCluster
-			for _, zone := range etcdZones {
-				m := &api.EtcdMemberSpec{}
-				m.Name = zone
-				m.InstanceGroup = fi.String(zone)
-				etcd.Members = append(etcd.Members, m)
-			}
-			c.Spec.EtcdClusters = append(c.Spec.EtcdClusters, etcd)
-		}
-	}
-
-	fullSpec, err := mockedPopulateClusterSpec(c)
+	fullSpec, err := mockedPopulateClusterSpec(ctx, c, cloud)
 	if err != nil {
 		t.Fatalf("error from PopulateClusterSpec: %v", err)
 	}
@@ -67,8 +48,8 @@ func buildDefaultCluster(t *testing.T) *api.Cluster {
 	//c.Cluster = &api.Cluster{}
 	//c.Cluster.Name = "testcluster.mydomain.com"
 
-	//c.InstanceGroups = append(c.InstanceGroups, buildNodeInstanceGroup("us-mock-1a"))
-	//c.InstanceGroups = append(c.InstanceGroups, buildMasterInstanceGroup("us-mock-1a"))
+	//c.InstanceGroups = append(c.InstanceGroups, buildNodeInstanceGroup("us-test-1a"))
+	//c.InstanceGroups = append(c.InstanceGroups, buildMasterInstanceGroup("us-test-1a"))
 	//c.SSHPublicKey = path.Join(os.Getenv("HOME"), ".ssh", "id_rsa.pub")
 	//
 	//c.Cluster.Spec.Kubelet = &api.KubeletConfig{}
@@ -104,12 +85,12 @@ func buildDefaultCluster(t *testing.T) *api.Cluster {
 
 func TestValidateFull_Default_Validates(t *testing.T) {
 	c := buildDefaultCluster(t)
-	if err := validation.ValidateCluster(c, false); err != nil {
+	if errs := validation.ValidateCluster(c, false); len(errs) != 0 {
 		klog.Infof("Cluster: %v", c)
-		t.Fatalf("Validate gave unexpected error (strict=false): %v", err)
+		t.Fatalf("Validate gave unexpected error (strict=false): %v", errs.ToAggregate())
 	}
-	if err := validation.ValidateCluster(c, true); err != nil {
-		t.Fatalf("Validate gave unexpected error (strict=true): %v", err)
+	if errs := validation.ValidateCluster(c, true); len(errs) != 0 {
+		t.Fatalf("Validate gave unexpected error (strict=true): %v", errs.ToAggregate())
 	}
 }
 
@@ -133,32 +114,55 @@ func TestValidateFull_ClusterName_Required(t *testing.T) {
 
 func TestValidateFull_UpdatePolicy_Valid(t *testing.T) {
 	c := buildDefaultCluster(t)
-	c.Spec.UpdatePolicy = fi.String(api.UpdatePolicyExternal)
-	expectNoErrorFromValidate(t, c)
+	for _, test := range []struct {
+		label  string
+		policy *string
+	}{
+		{
+			label: "missing",
+		},
+		{
+			label:  "automatic",
+			policy: fi.PtrTo(api.UpdatePolicyAutomatic),
+		},
+		{
+			label:  "external",
+			policy: fi.PtrTo(api.UpdatePolicyExternal),
+		},
+	} {
+		t.Run(test.label, func(t *testing.T) {
+			c.Spec.UpdatePolicy = test.policy
+			expectNoErrorFromValidate(t, c)
+		})
+	}
 }
 
 func TestValidateFull_UpdatePolicy_Invalid(t *testing.T) {
 	c := buildDefaultCluster(t)
-	c.Spec.UpdatePolicy = fi.String("not-a-real-value")
-	expectErrorFromValidate(t, c, "UpdatePolicy")
-}
-
-func Test_Validate_No_Classic_With_14(t *testing.T) {
-	c := buildDefaultCluster(t)
-	c.Spec.KubernetesVersion = "1.4.1"
-	c.Spec.Networking = &api.NetworkingSpec{
-		Classic: &api.ClassicNetworkingSpec{},
+	for _, test := range []struct {
+		label  string
+		policy string
+	}{
+		{
+			label:  "empty",
+			policy: "",
+		},
+		{
+			label:  "populated",
+			policy: "not-a-real-value",
+		},
+	} {
+		t.Run(test.label, func(t *testing.T) {
+			c.Spec.UpdatePolicy = &test.policy
+			expectErrorFromValidate(t, c, "spec.updatePolicy")
+		})
 	}
-
-	expectErrorFromValidate(t, c, "spec.Networking")
 }
 
 func Test_Validate_Kubenet_With_14(t *testing.T) {
 	c := buildDefaultCluster(t)
 	c.Spec.KubernetesVersion = "1.4.1"
-	c.Spec.Networking = &api.NetworkingSpec{
-		Kubenet: &api.KubenetNetworkingSpec{},
-	}
+	c.Spec.Networking.Kubenet = &api.KubenetNetworkingSpec{}
 
 	expectNoErrorFromValidate(t, c)
 }
@@ -188,27 +192,26 @@ func TestValidate_ContainerRegistry_and_ContainerProxy_exclusivity(t *testing.T)
 
 	proxy := "https://proxy.example.com/"
 	c.Spec.Assets.ContainerProxy = &proxy
-	expectErrorFromValidate(t, c, "ContainerProxy cannot be used in conjunction with ContainerRegistry")
+	expectErrorFromValidate(t, c, "containerProxy cannot be used in conjunction with containerRegistry")
 
 	c.Spec.Assets.ContainerRegistry = nil
 	expectNoErrorFromValidate(t, c)
-
 }
 
 func expectErrorFromValidate(t *testing.T, c *api.Cluster, message string) {
-	err := validation.ValidateCluster(c, false)
-	if err == nil {
+	errs := validation.ValidateCluster(c, false)
+	if len(errs) == 0 {
 		t.Fatalf("Expected error from Validate")
 	}
-	actualMessage := fmt.Sprintf("%v", err)
+	actualMessage := fmt.Sprintf("%v", errs.ToAggregate())
 	if !strings.Contains(actualMessage, message) {
 		t.Fatalf("Expected error %q, got %q", message, actualMessage)
 	}
 }
 
 func expectNoErrorFromValidate(t *testing.T, c *api.Cluster) {
-	err := validation.ValidateCluster(c, false)
-	if err != nil {
-		t.Fatalf("Unexpected error from Validate: %v", err)
+	errs := validation.ValidateCluster(c, false)
+	if len(errs) != 0 {
+		t.Fatalf("Unexpected error from Validate: %v", errs.ToAggregate())
 	}
 }

@@ -24,12 +24,15 @@ import (
 )
 
 func TestKeypairDeps(t *testing.T) {
-	ca := &Keypair{}
+	ca := &Keypair{
+		Name: fi.PtrTo("ca"),
+	}
 	cert := &Keypair{
+		Name:   fi.PtrTo("cert"),
 		Signer: ca,
 	}
 
-	tasks := make(map[string]fi.Task)
+	tasks := make(map[string]fi.CloudupTask)
 	tasks["ca"] = ca
 	tasks["cert"] = cert
 

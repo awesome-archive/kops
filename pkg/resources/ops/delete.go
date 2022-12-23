@@ -1,5 +1,5 @@
 /*
-Copyright 2016 The Kubernetes Authors.
+Copyright 2019 The Kubernetes Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -21,7 +21,7 @@ import (
 	"sync"
 	"time"
 
-	"k8s.io/klog"
+	"k8s.io/klog/v2"
 	"k8s.io/kops/pkg/resources"
 	awsresources "k8s.io/kops/pkg/resources/aws"
 	"k8s.io/kops/upup/pkg/fi"
@@ -40,9 +40,7 @@ func DeleteResources(cloud fi.Cloud, resourceMap map[string]*resources.Resource)
 			depMap[block] = append(depMap[block], k)
 		}
 
-		for _, blocked := range t.Blocked {
-			depMap[k] = append(depMap[k], blocked)
-		}
+		depMap[k] = append(depMap[k], t.Blocked...)
 
 		if t.Done {
 			done[k] = t
@@ -129,7 +127,7 @@ func DeleteResources(cloud fi.Cloud, resourceMap map[string]*resources.Resource)
 						mutex.Lock()
 						if awsresources.IsDependencyViolation(err) {
 							fmt.Printf("%s\tstill has dependencies, will retry\n", human)
-							klog.V(4).Infof("API call made when had dependency: %s", human)
+							klog.V(4).Infof("resource %q generated a dependency error: %v", human, err)
 						} else {
 							fmt.Printf("%s\terror deleting resources, will retry: %v\n", human, err)
 						}

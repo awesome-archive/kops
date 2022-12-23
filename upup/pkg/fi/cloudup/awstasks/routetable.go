@@ -1,5 +1,5 @@
 /*
-Copyright 2016 The Kubernetes Authors.
+Copyright 2019 The Kubernetes Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -21,17 +21,17 @@ import (
 
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/ec2"
-	"k8s.io/klog"
+	"k8s.io/klog/v2"
 	"k8s.io/kops/upup/pkg/fi"
 	"k8s.io/kops/upup/pkg/fi/cloudup/awsup"
-	"k8s.io/kops/upup/pkg/fi/cloudup/cloudformation"
 	"k8s.io/kops/upup/pkg/fi/cloudup/terraform"
+	"k8s.io/kops/upup/pkg/fi/cloudup/terraformWriter"
 )
 
-//go:generate fitask -type=RouteTable
+// +kops:fitask
 type RouteTable struct {
 	Name      *string
-	Lifecycle *fi.Lifecycle
+	Lifecycle fi.Lifecycle
 
 	ID  *string
 	VPC *VPC
@@ -48,8 +48,8 @@ func (e *RouteTable) CompareWithID() *string {
 	return e.ID
 }
 
-func (e *RouteTable) Find(c *fi.Context) (*RouteTable, error) {
-	cloud := c.Cloud.(awsup.AWSCloud)
+func (e *RouteTable) Find(c *fi.CloudupContext) (*RouteTable, error) {
+	cloud := c.T.Cloud.(awsup.AWSCloud)
 
 	var rt *ec2.RouteTable
 	var err error
@@ -74,7 +74,7 @@ func (e *RouteTable) Find(c *fi.Context) (*RouteTable, error) {
 		var filters []*ec2.Filter
 		filters = append(filters, &ec2.Filter{
 			Name:   aws.String("tag-key"),
-			Values: aws.StringSlice([]string{"kubernetes.io/cluster/" + c.Cluster.Name}),
+			Values: aws.StringSlice([]string{"kubernetes.io/cluster/" + c.T.Cluster.Name}),
 		})
 		filters = append(filters, &ec2.Filter{
 			Name:   aws.String("tag:" + awsup.TagNameKopsRole),
@@ -146,8 +146,8 @@ func findRouteTableByFilters(cloud awsup.AWSCloud, filters []*ec2.Filter) (*ec2.
 	return rt, nil
 }
 
-func (e *RouteTable) Run(c *fi.Context) error {
-	return fi.DefaultDeltaRunMethod(e, c)
+func (e *RouteTable) Run(c *fi.CloudupContext) error {
+	return fi.CloudupDefaultDeltaRunMethod(e, c)
 }
 
 func (s *RouteTable) CheckChanges(a, e, changes *RouteTable) error {
@@ -174,7 +174,8 @@ func (_ *RouteTable) RenderAWS(t *awsup.AWSAPITarget, a, e, changes *RouteTable)
 		klog.V(2).Infof("Creating RouteTable with VPC: %q", *vpcID)
 
 		request := &ec2.CreateRouteTableInput{
-			VpcId: vpcID,
+			VpcId:             vpcID,
+			TagSpecifications: awsup.EC2TagSpecification(ec2.ResourceTypeRouteTable, e.Tags),
 		}
 
 		response, err := t.Cloud.EC2().CreateRouteTable(request)
@@ -190,8 +191,8 @@ func (_ *RouteTable) RenderAWS(t *awsup.AWSAPITarget, a, e, changes *RouteTable)
 }
 
 type terraformRouteTable struct {
-	VPCID *terraform.Literal `json:"vpc_id"`
-	Tags  map[string]string  `json:"tags,omitempty"`
+	VPCID *terraformWriter.Literal `cty:"vpc_id"`
+	Tags  map[string]string        `cty:"tags"`
 }
 
 func (_ *RouteTable) RenderTerraform(t *terraform.TerraformTarget, a, e, changes *RouteTable) error {
@@ -211,24 +212,6 @@ func (_ *RouteTable) RenderTerraform(t *terraform.TerraformTarget, a, e, changes
 	return t.RenderResource("aws_route_table", *e.Name, tf)
 }
 
-func (e *RouteTable) TerraformLink() *terraform.Literal {
-	return terraform.LiteralProperty("aws_route_table", *e.Name, "id")
-}
-
-type cloudformationRouteTable struct {
-	VPCID *cloudformation.Literal `json:"VpcId,omitempty"`
-	Tags  []cloudformationTag     `json:"Tags,omitempty"`
-}
-
-func (_ *RouteTable) RenderCloudformation(t *cloudformation.CloudformationTarget, a, e, changes *RouteTable) error {
-	cf := &cloudformationRouteTable{
-		VPCID: e.VPC.CloudformationLink(),
-		Tags:  buildCloudformationTags(e.Tags),
-	}
-
-	return t.RenderResource("AWS::EC2::RouteTable", *e.Name, cf)
-}
-
-func (e *RouteTable) CloudformationLink() *cloudformation.Literal {
-	return cloudformation.Ref("AWS::EC2::RouteTable", *e.Name)
+func (e *RouteTable) TerraformLink() *terraformWriter.Literal {
+	return terraformWriter.LiteralProperty("aws_route_table", *e.Name, "id")
 }

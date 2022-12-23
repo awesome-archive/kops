@@ -1,0 +1,132 @@
+apiVersion: kops.k8s.io/v1alpha2
+kind: Cluster
+metadata:
+  creationTimestamp: "2016-12-10T22:42:27Z"
+  name: minimal.example.com
+spec:
+  DisableSubnetTags: true
+  additionalNetworkCIDRs:
+  - 172.21.0.0/16
+  additionalPolicies:
+    master: '[ { "Action": [ "s3:GetObject" ], "Resource": [ "*" ], "Effect": "Allow"
+      } ]'
+  additionalSans:
+  - proxy.api.minimal.example.com
+  addons:
+  - manifest: s3://somebucket/example.yaml
+  api:
+    dns: {}
+    loadBalancer:
+      class: Network
+      type: Public
+  authorization:
+    alwaysAllow: {}
+  awsLoadBalancerController:
+    enableWAF: true
+  channel: stable
+  cloudConfig:
+    awsEBSCSIDriver:
+      volumeAttachLimit: 65
+  cloudProvider: aws
+  configBase: memfs://clusters.example.com/minimal.example.com
+  egressProxy:
+    httpProxy:
+      host: egress-proxy.invalid
+  etcdClusters:
+  - cpuRequest: 200m
+    etcdMembers:
+    - instanceGroup: master-us-test-1a
+      name: us-test-1a
+    memoryRequest: 100Mi
+    name: main
+  - cpuRequest: 200m
+    etcdMembers:
+    - instanceGroup: master-us-test-1a
+      name: us-test-1a
+    memoryRequest: 100Mi
+    name: events
+  externalDns:
+    disable: true
+  externalPolicies:
+    master:
+    - arn:aws-test:iam::123456789000:policy/test-policy
+  hooks:
+  - disabled: true
+    name: hookDisabled
+  - name: hookDefault
+  - disabled: false
+    name: hookEnabled
+    roles:
+    - Master
+  iam:
+    legacy: false
+  isolateMasters: true
+  kubernetesApiAccess:
+  - 0.0.0.0/0
+  kubernetesVersion: v1.21.0
+  masterKubelet:
+    cpuCFSQuota: true
+  masterPublicName: api.minimal.example.com
+  networkCIDR: 172.20.0.0/16
+  networkID: vpc-123456
+  networking:
+    amazonvpc: {}
+  nodeTerminationHandler:
+    enableSpotInterruptionDraining: true
+  nonMasqueradeCIDR: 100.64.0.0/10
+  podCIDR: 100.64.0.0/16
+  podIdentityWebhook:
+    replicas: 14
+  serviceClusterIPRange: 100.65.0.0/16
+  sshAccess:
+  - 0.0.0.0/0
+  subnets:
+  - cidr: 172.20.32.0/19
+    name: us-test-1a
+    type: Public
+    zone: us-test-1a
+  topology:
+    dns:
+      type: None
+    masters: public
+    nodes: private
+  warmPool:
+    enableLifecycleHook: true
+
+---
+
+apiVersion: kops.k8s.io/v1alpha2
+kind: InstanceGroup
+metadata:
+  creationTimestamp: "2016-12-10T22:42:28Z"
+  labels:
+    kops.k8s.io/cluster: minimal.example.com
+  name: nodes
+spec:
+  associatePublicIp: true
+  image: ubuntu/images/hvm-ssd/ubuntu-focal-20.04-amd64-server-20220404
+  machineType: t2.medium
+  maxSize: 2
+  minSize: 2
+  role: Node
+  subnets:
+  - us-test-1a
+
+---
+
+apiVersion: kops.k8s.io/v1alpha2
+kind: InstanceGroup
+metadata:
+  creationTimestamp: "2016-12-10T22:42:28Z"
+  labels:
+    kops.k8s.io/cluster: minimal.example.com
+  name: master-us-test-1a
+spec:
+  associatePublicIp: true
+  image: ubuntu/images/hvm-ssd/ubuntu-focal-20.04-amd64-server-20220404
+  machineType: m3.medium
+  maxSize: 1
+  minSize: 1
+  role: Master
+  subnets:
+  - us-test-1a

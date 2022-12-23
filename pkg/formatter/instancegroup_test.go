@@ -25,10 +25,12 @@ import (
 func TestRenderInstanceGroupZones(t *testing.T) {
 	cluster := &kops.Cluster{
 		Spec: kops.ClusterSpec{
-			Subnets: []kops.ClusterSubnetSpec{
-				{Name: "subnet1", Zone: "subnet1zone"},
-				{Name: "subnet2", Zone: "subnet2zone"},
-				{Name: "subnet3", Zone: "subnet3zone"},
+			Networking: kops.NetworkingSpec{
+				Subnets: []kops.ClusterSubnetSpec{
+					{Name: "subnet1", Zone: "subnet1zone"},
+					{Name: "subnet2", Zone: "subnet2zone"},
+					{Name: "subnet3", Zone: "subnet3zone"},
+				},
 			},
 		},
 	}
@@ -64,6 +66,39 @@ func TestRenderInstanceGroupZones(t *testing.T) {
 	}
 	for _, g := range grid {
 		f := RenderInstanceGroupZones(cluster)
+		actual := f(g.ig)
+		if actual != g.expected {
+			t.Errorf("unexpected output: %q vs %q", g.expected, actual)
+			continue
+		}
+	}
+}
+
+func TestRenderInstanceGroupSubnets(t *testing.T) {
+	cluster := &kops.Cluster{}
+	grid := []struct {
+		ig       *kops.InstanceGroup
+		expected string
+	}{
+		{
+			ig: &kops.InstanceGroup{
+				Spec: kops.InstanceGroupSpec{
+					Subnets: []string{"subnet"},
+				},
+			},
+			expected: "subnet",
+		},
+		{
+			ig: &kops.InstanceGroup{
+				Spec: kops.InstanceGroupSpec{
+					Subnets: []string{"subnet1", "subnet2"},
+				},
+			},
+			expected: "subnet1,subnet2",
+		},
+	}
+	for _, g := range grid {
+		f := RenderInstanceGroupSubnets(cluster)
 		actual := f(g.ig)
 		if actual != g.expected {
 			t.Errorf("unexpected output: %q vs %q", g.expected, actual)

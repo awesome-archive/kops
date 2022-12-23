@@ -1,5 +1,5 @@
 /*
-Copyright 2016 The Kubernetes Authors.
+Copyright 2019 The Kubernetes Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -19,7 +19,7 @@ package fi
 import (
 	"reflect"
 
-	"k8s.io/klog"
+	"k8s.io/klog/v2"
 )
 
 // An important part of our state synchronization is to compare two tasks, to see what has changed
@@ -116,6 +116,11 @@ func equalFieldValues(a, e reflect.Value) bool {
 		if ok && (e.Kind() == reflect.Ptr || e.Kind() == reflect.Interface) && !e.IsNil() {
 			eResource, ok := e.Interface().(Resource)
 			if ok {
+				if hasIsReady, ok := eResource.(HasIsReady); ok {
+					if !hasIsReady.IsReady() {
+						return false
+					}
+				}
 				same, err := ResourcesMatch(aResource, eResource)
 				if err != nil {
 					klog.Fatalf("error while comparing resources: %v", err)

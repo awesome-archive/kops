@@ -1,5 +1,5 @@
 /*
-Copyright 2016 The Kubernetes Authors.
+Copyright 2019 The Kubernetes Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -19,12 +19,14 @@ package kops
 import (
 	"fmt"
 	"net/url"
+	"strings"
 
-	"github.com/blang/semver"
+	"github.com/blang/semver/v4"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	v1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"k8s.io/klog"
+	"k8s.io/klog/v2"
+	kopsbase "k8s.io/kops"
 	"k8s.io/kops/pkg/apis/kops/util"
+	"k8s.io/kops/util/pkg/architectures"
 	"k8s.io/kops/util/pkg/vfs"
 )
 
@@ -32,12 +34,11 @@ var DefaultChannelBase = "https://raw.githubusercontent.com/kubernetes/kops/mast
 
 const (
 	DefaultChannel = "stable"
-	AlphaChannel   = "alpha"
 )
 
 type Channel struct {
-	v1.TypeMeta `json:",inline"`
-	ObjectMeta  metav1.ObjectMeta `json:"metadata,omitempty"`
+	metav1.TypeMeta `json:",inline"`
+	ObjectMeta      metav1.ObjectMeta `json:"metadata,omitempty"`
 
 	Spec ChannelSpec `json:"spec,omitempty"`
 }
@@ -52,6 +53,9 @@ type ChannelSpec struct {
 
 	// KubernetesVersions allows us to recommend/requires kubernetes versions
 	KubernetesVersions []KubernetesVersionSpec `json:"kubernetesVersions,omitempty"`
+
+	// Packages specifies the package versions that correspond to this channel.
+	Packages []PackageVersionSpec `json:"packages,omitempty"`
 }
 
 type KopsVersionSpec struct {
@@ -75,20 +79,40 @@ type KubernetesVersionSpec struct {
 }
 
 type ChannelImageSpec struct {
-	Labels map[string]string `json:"labels,omitempty"`
-
 	ProviderID string `json:"providerID,omitempty"`
+
+	ArchitectureID string `json:"architectureID,omitempty"`
 
 	Name string `json:"name,omitempty"`
 
 	KubernetesVersion string `json:"kubernetesVersion,omitempty"`
 }
 
-// LoadChannel loads a Channel object from the specified VFS location
-func LoadChannel(location string) (*Channel, error) {
+// PackageVersionSpec specifies the version of a package
+type PackageVersionSpec struct {
+	// Name is the name of the package.
+	Name string `json:"name"`
+
+	// Version is the version of the package.
+	Version string `json:"version"`
+
+	// KubernetesVersion specifies that this package only applies to a semver range of kubernetes version
+	KubernetesVersion string `json:"kubernetesVersion,omitempty"`
+
+	// KopsVersion specifies that this package only applies to a semver range of kOps version
+	KopsVersion string `json:"kopsVersion,omitempty"`
+}
+
+// ResolveChannel maps a channel to an absolute URL (possibly a VFS URL)
+// If the channel is the well-known "none" value, we return (nil, nil)
+func ResolveChannel(location string) (*url.URL, error) {
+	if location == "none" {
+		return nil, nil
+	}
+
 	u, err := url.Parse(location)
 	if err != nil {
-		return nil, fmt.Errorf("invalid channel: %q", location)
+		return nil, fmt.Errorf("invalid channel location: %q", location)
 	}
 
 	if !u.IsAbs() {
@@ -100,7 +124,22 @@ func LoadChannel(location string) (*Channel, error) {
 		u = base.ResolveReference(u)
 	}
 
-	resolved := u.String()
+	return u, nil
+}
+
+// LoadChannel loads a Channel object from the specified VFS location
+func LoadChannel(location string) (*Channel, error) {
+	resolvedURL, err := ResolveChannel(location)
+	if err != nil {
+		return nil, err
+	}
+
+	if resolvedURL == nil {
+		return &Channel{}, nil
+	}
+
+	resolved := resolvedURL.String()
+
 	klog.V(2).Infof("Loading channel from %q", resolved)
 	channelBytes, err := vfs.Context.ReadFile(resolved)
 	if err != nil {
@@ -140,9 +179,8 @@ func (v *KubernetesVersionSpec) FindRecommendedUpgrade(version semver.Version) (
 	if recommendedVersion.GT(version) {
 		klog.V(2).Infof("RecommendedVersion=%q, Have=%q.  Recommending upgrade", recommendedVersion, version)
 		return recommendedVersion, nil
-	} else {
-		klog.V(4).Infof("RecommendedVersion=%q, Have=%q.  No upgrade needed.", recommendedVersion, version)
 	}
+	klog.V(4).Infof("RecommendedVersion=%q, Have=%q.  No upgrade needed.", recommendedVersion, version)
 	return nil, nil
 }
 
@@ -160,9 +198,8 @@ func (v *KopsVersionSpec) FindRecommendedUpgrade(version semver.Version) (*semve
 	if recommendedVersion.GT(version) {
 		klog.V(2).Infof("RecommendedVersion=%q, Have=%q.  Recommending upgrade", recommendedVersion, version)
 		return &recommendedVersion, nil
-	} else {
-		klog.V(4).Infof("RecommendedVersion=%q, Have=%q.  No upgrade needed.", recommendedVersion, version)
 	}
+	klog.V(4).Infof("RecommendedVersion=%q, Have=%q.  No upgrade needed.", recommendedVersion, version)
 	return nil, nil
 }
 
@@ -180,9 +217,8 @@ func (v *KubernetesVersionSpec) IsUpgradeRequired(version semver.Version) (bool,
 	if requiredVersion.GT(version) {
 		klog.V(2).Infof("RequiredVersion=%q, Have=%q.  Requiring upgrade", requiredVersion, version)
 		return true, nil
-	} else {
-		klog.V(4).Infof("RequiredVersion=%q, Have=%q.  No upgrade needed.", requiredVersion, version)
 	}
+	klog.V(4).Infof("RequiredVersion=%q, Have=%q.  No upgrade needed.", requiredVersion, version)
 	return false, nil
 }
 
@@ -200,9 +236,8 @@ func (v *KopsVersionSpec) IsUpgradeRequired(version semver.Version) (bool, error
 	if requiredVersion.GT(version) {
 		klog.V(2).Infof("RequiredVersion=%q, Have=%q.  Requiring upgrade", requiredVersion, version)
 		return true, nil
-	} else {
-		klog.V(4).Infof("RequiredVersion=%q, Have=%q.  No upgrade needed.", requiredVersion, version)
 	}
+	klog.V(4).Infof("RequiredVersion=%q, Have=%q.  No upgrade needed.", requiredVersion, version)
 	return false, nil
 }
 
@@ -251,21 +286,24 @@ func FindKopsVersionSpec(versions []KopsVersionSpec, version semver.Version) *Ko
 type CloudProviderID string
 
 const (
-	CloudProviderALI       CloudProviderID = "alicloud"
 	CloudProviderAWS       CloudProviderID = "aws"
-	CloudProviderBareMetal CloudProviderID = "baremetal"
 	CloudProviderDO        CloudProviderID = "digitalocean"
 	CloudProviderGCE       CloudProviderID = "gce"
+	CloudProviderHetzner   CloudProviderID = "hetzner"
 	CloudProviderOpenstack CloudProviderID = "openstack"
-	CloudProviderVSphere   CloudProviderID = "vsphere"
+	CloudProviderAzure     CloudProviderID = "azure"
+	CloudProviderScaleway  CloudProviderID = "scaleway"
 )
 
 // FindImage returns the image for the cloudprovider, or nil if none found
-func (c *Channel) FindImage(provider CloudProviderID, kubernetesVersion semver.Version) *ChannelImageSpec {
+func (c *Channel) FindImage(provider CloudProviderID, kubernetesVersion semver.Version, architecture architectures.Architecture) *ChannelImageSpec {
 	var matches []*ChannelImageSpec
 
 	for _, image := range c.Spec.Images {
 		if image.ProviderID != string(provider) {
+			continue
+		}
+		if image.ArchitectureID != "" && image.ArchitectureID != string(architecture) {
 			continue
 		}
 		if image.KubernetesVersion != "" {
@@ -314,14 +352,72 @@ func RecommendedKubernetesVersion(c *Channel, kopsVersionString string) *semver.
 		}
 	}
 
-	if c.Spec.Cluster != nil {
-		sv, err := util.ParseKubernetesVersion(c.Spec.Cluster.KubernetesVersion)
-		if err != nil {
-			klog.Warningf("unable to parse kubernetes version %q", c.Spec.Cluster.KubernetesVersion)
-		} else {
-			return sv
+	return nil
+}
+
+// Returns true if the given image name has the stable or alpha channel images prefix. Otherwise false.
+func (c *Channel) HasUpstreamImagePrefix(image string) bool {
+	return strings.HasPrefix(image, "kope.io/k8s-") ||
+		strings.HasPrefix(image, "099720109477/ubuntu/images/hvm-ssd/ubuntu-focal-20.04-") ||
+		strings.HasPrefix(image, "cos-cloud/cos-stable-") ||
+		strings.HasPrefix(image, "ubuntu-os-cloud/ubuntu-2004-focal-") ||
+		strings.HasPrefix(image, "Canonical:0001-com-ubuntu-server-focal:20_04-lts-gen2:")
+}
+
+// GetPackageVersion returns the version for the package, or an error if could not be found.
+func (c *Channel) GetPackageVersion(name string, kubernetesVersion *semver.Version) (*util.Version, error) {
+	var matches []*PackageVersionSpec
+
+	for i := range c.Spec.Packages {
+		pkg := &c.Spec.Packages[i]
+		if pkg.Name != name {
+			continue
 		}
+
+		if pkg.KubernetesVersion != "" {
+			versionRange, err := semver.ParseRange(pkg.KubernetesVersion)
+			if err != nil {
+				klog.Warningf("cannot parse KubernetesVersion=%q", pkg.KubernetesVersion)
+				continue
+			}
+
+			if !versionRange(*kubernetesVersion) {
+				klog.V(2).Infof("Kubernetes version %q does not match range: %s", kubernetesVersion, pkg.KubernetesVersion)
+				continue
+			}
+		}
+
+		if pkg.KopsVersion != "" {
+			kopsVersion, err := util.ParseVersion(kopsbase.KOPS_RELEASE_VERSION)
+			if err != nil {
+				return nil, fmt.Errorf("parsing kops version %q: %w", kopsbase.KOPS_RELEASE_VERSION, err)
+			}
+
+			versionRange, err := semver.ParseRange(pkg.KopsVersion)
+			if err != nil {
+				klog.Warningf("cannot parse KopsVersion=%q", pkg.KopsVersion)
+				continue
+			}
+
+			if !kopsVersion.IsInRange(versionRange) {
+				klog.V(2).Infof("kOps version %q does not match range: %s", kopsVersion, pkg.KopsVersion)
+				continue
+			}
+		}
+
+		matches = append(matches, pkg)
 	}
 
-	return nil
+	if len(matches) == 0 {
+		return nil, fmt.Errorf("found no packages in channel for name=%q", name)
+	}
+
+	if len(matches) != 1 {
+		return nil, fmt.Errorf("found multiple packages in channel for name=%q", name)
+	}
+	v, err := util.ParseVersion(matches[0].Version)
+	if err != nil {
+		return nil, fmt.Errorf("error parsing version %q for package %q", matches[0].Version, name)
+	}
+	return v, nil
 }

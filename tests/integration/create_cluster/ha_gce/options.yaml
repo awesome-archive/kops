@@ -1,12 +1,13 @@
+CloudProvider: gce
 ClusterName: ha-gce.example.com
+ControlPlaneZones:
+- us-test1-a
+- us-test1-b
+- us-test1-c
+KubernetesVersion: v1.26.0
+Networking: cni
+Project: testproject
 Zones:
 - us-test1-a
 - us-test1-b
 - us-test1-c
-MasterZones:
-- us-test1-a
-- us-test1-b
-- us-test1-c
-Cloud: gce
-KubernetesVersion: v1.8.0-beta.1
-Project: testproject

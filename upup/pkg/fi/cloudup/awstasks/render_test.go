@@ -1,5 +1,5 @@
 /*
-Copyright 2018 The Kubernetes Authors.
+Copyright 2019 The Kubernetes Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -17,15 +17,14 @@ limitations under the License.
 package awstasks
 
 import (
-	"io/ioutil"
 	"os"
 	"path"
 	"reflect"
 	"testing"
 
+	"k8s.io/kops/pkg/diff"
 	"k8s.io/kops/upup/pkg/fi"
 	"k8s.io/kops/upup/pkg/fi/cloudup/awsup"
-	"k8s.io/kops/upup/pkg/fi/cloudup/cloudformation"
 	"k8s.io/kops/upup/pkg/fi/cloudup/terraform"
 )
 
@@ -35,12 +34,7 @@ type renderTest struct {
 }
 
 func doRenderTests(t *testing.T, method string, cases []*renderTest) {
-	outdir, err := ioutil.TempDir("/tmp", "kops-render-")
-	if err != nil {
-		t.Errorf("failed to create local render directory: %s", err)
-		t.FailNow()
-	}
-	defer os.RemoveAll(outdir)
+	outdir := t.TempDir()
 
 	for i, c := range cases {
 		var filename string
@@ -50,11 +44,8 @@ func doRenderTests(t *testing.T, method string, cases []*renderTest) {
 
 		switch method {
 		case "RenderTerraform":
-			target = terraform.NewTerraformTarget(cloud, "eu-west-2", "test", outdir, nil)
+			target = terraform.NewTerraformTarget(cloud, "test", nil, outdir, nil)
 			filename = "kubernetes.tf"
-		case "RenderCloudformation":
-			target = cloudformation.NewCloudformationTarget(cloud, "eu-west-2", "test", outdir)
-			filename = "kubernetes.json"
 		default:
 			t.Errorf("unknown render method: %s", method)
 			t.FailNow()
@@ -74,7 +65,7 @@ func doRenderTests(t *testing.T, method string, cases []*renderTest) {
 			}
 
 			// @step: invoke the target finish up
-			in := []reflect.Value{reflect.ValueOf(make(map[string]fi.Task))}
+			in := []reflect.Value{reflect.ValueOf(make(map[string]fi.CloudupTask))}
 			resp = reflect.ValueOf(target).MethodByName("Finish").Call(in)
 			if err := resp[0].Interface(); err != nil {
 				return err.(error)
@@ -82,13 +73,15 @@ func doRenderTests(t *testing.T, method string, cases []*renderTest) {
 
 			// @step: check the render is as expected
 			if c.Expected != "" {
-				content, err := ioutil.ReadFile(path.Join(outdir, filename))
+				content, err := os.ReadFile(path.Join(outdir, filename))
 				if err != nil {
 					return err
 				}
 				if c.Expected != string(content) {
+					diffString := diff.FormatDiff(c.Expected, string(content))
+					t.Logf("diff:\n%s\n", diffString)
 					t.Errorf("case %d, expected: %s\n,got: %s\n", i, c.Expected, string(content))
-					//assert.Equal(t, "", string(content))
+					// assert.Equal(t, "", string(content))
 				}
 			}
 

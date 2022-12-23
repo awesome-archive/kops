@@ -1,5 +1,5 @@
 /*
-Copyright 2018 The Kubernetes Authors.
+Copyright 2019 The Kubernetes Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -17,17 +17,104 @@ limitations under the License.
 package openstackmodel
 
 import (
+	"fmt"
+
+	"k8s.io/klog/v2"
 	"k8s.io/kops/pkg/model"
 	"k8s.io/kops/upup/pkg/fi"
+	"k8s.io/kops/upup/pkg/fi/cloudup/openstack"
 	"k8s.io/kops/upup/pkg/fi/cloudup/openstacktasks"
 )
 
 type OpenstackModelContext struct {
 	*model.KopsModelContext
+	cloud openstack.OpenstackCloud
+}
+
+func (c *OpenstackModelContext) createCloud() (openstack.OpenstackCloud, error) {
+	if c.cloud == nil {
+		osCloud, err := openstack.NewOpenstackCloud(c.Cluster, "openstackmodel")
+		if err != nil {
+			return nil, err
+		}
+		c.cloud = osCloud
+	}
+	return c.cloud, nil
+}
+
+func (c *OpenstackModelContext) UseVIPACL() bool {
+	osCloud, err := c.createCloud()
+	if err != nil {
+		return false
+	}
+	use, err := osCloud.UseLoadBalancerVIPACL()
+	if err != nil {
+		return false
+	}
+	return use
+}
+
+func (c *OpenstackModelContext) GetNetworkName() (string, error) {
+	if c.Cluster.Spec.Networking.NetworkID == "" {
+		return c.ClusterName(), nil
+	}
+
+	osCloud, err := c.createCloud()
+	if err != nil {
+		return "", err
+	}
+
+	network, err := osCloud.GetNetwork(c.Cluster.Spec.Networking.NetworkID)
+	if err != nil {
+		return "", err
+	}
+	return network.Name, nil
+}
+
+func (c *OpenstackModelContext) APIResourceName() string {
+	if c.Cluster.Spec.API.PublicName != "" {
+		return c.Cluster.Spec.API.PublicName
+	}
+	return "api." + c.ClusterName()
+}
+
+func (c *OpenstackModelContext) findSubnetClusterSpec(subnet string) (string, error) {
+	for _, sp := range c.Cluster.Spec.Networking.Subnets {
+		if sp.Name == subnet {
+			name, err := c.findSubnetNameByID(sp.ID, sp.Name)
+			if err != nil {
+				return "", err
+			}
+			return name, nil
+		}
+	}
+	return "", fmt.Errorf("could not find subnet %s from clusterSpec", subnet)
+}
+
+func (c *OpenstackModelContext) findSubnetNameByID(subnetID string, subnetName string) (string, error) {
+	if subnetID == "" {
+		return subnetName + "." + c.ClusterName(), nil
+	}
+
+	osCloud, err := c.createCloud()
+	if err != nil {
+		return "", err
+	}
+
+	subnet, err := osCloud.GetSubnet(subnetID)
+	if err != nil {
+		return "", err
+	}
+	return subnet.Name, nil
 }
 
 func (c *OpenstackModelContext) LinkToNetwork() *openstacktasks.Network {
-	return &openstacktasks.Network{Name: s(c.ClusterName())}
+	netName, err := c.GetNetworkName()
+	if err != nil {
+		klog.Fatalf("Could not find networkname")
+		return nil
+	}
+	return &openstacktasks.Network{Name: s(netName)}
 }
 
 func (c *OpenstackModelContext) LinkToRouter(name *string) *openstacktasks.Router {
@@ -43,5 +130,5 @@ func (c *OpenstackModelContext) LinkToPort(name *string) *openstacktasks.Port {
 }
 
 func (c *OpenstackModelContext) LinkToSecurityGroup(name string) *openstacktasks.SecurityGroup {
-	return &openstacktasks.SecurityGroup{Name: fi.String(name)}
+	return &openstacktasks.SecurityGroup{Name: fi.PtrTo(name)}
 }

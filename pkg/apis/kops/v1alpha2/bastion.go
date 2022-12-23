@@ -1,5 +1,5 @@
 /*
-Copyright 2016 The Kubernetes Authors.
+Copyright 2019 The Kubernetes Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -17,7 +17,17 @@ limitations under the License.
 package v1alpha2
 
 type BastionSpec struct {
-	BastionPublicName string `json:"bastionPublicName,omitempty"`
-	// IdleTimeoutSeconds is the bastion's Loadbalancer idle timeout
-	IdleTimeoutSeconds *int64 `json:"idleTimeoutSeconds,omitempty"`
+	PublicName string `json:"bastionPublicName,omitempty"`
+	// IdleTimeoutSeconds is unused
+	// +k8s:conversion-gen=false
+	IdleTimeoutSeconds *int64                   `json:"idleTimeoutSeconds,omitempty"`
+	LoadBalancer       *BastionLoadBalancerSpec `json:"loadBalancer,omitempty"`
+}
+
+type BastionLoadBalancerSpec struct {
+	// AdditionalSecurityGroups is unused
+	// +k8s:conversion-gen=false
+	AdditionalSecurityGroups []string `json:"additionalSecurityGroups,omitempty"`
+	// Type of load balancer to create, it can be Public or Internal.
+	Type LoadBalancerType `json:"type,omitempty"`
 }

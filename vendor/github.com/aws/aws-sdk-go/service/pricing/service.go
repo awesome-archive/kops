@@ -8,6 +8,7 @@ import (
 	"github.com/aws/aws-sdk-go/aws/client/metadata"
 	"github.com/aws/aws-sdk-go/aws/request"
 	"github.com/aws/aws-sdk-go/aws/signer/v4"
+	"github.com/aws/aws-sdk-go/private/protocol"
 	"github.com/aws/aws-sdk-go/private/protocol/jsonrpc"
 )
 
@@ -31,7 +32,7 @@ var initRequest func(*request.Request)
 const (
 	ServiceName = "api.pricing" // Name of service.
 	EndpointsID = ServiceName   // ID to lookup a service endpoint with.
-	ServiceID   = "Pricing"     // ServiceID is a unique identifer of a specific service.
+	ServiceID   = "Pricing"     // ServiceID is a unique identifier of a specific service.
 )
 
 // New creates a new instance of the Pricing client with a session.
@@ -39,33 +40,38 @@ const (
 // aws.Config parameter to add your extra config.
 //
 // Example:
-//     // Create a Pricing client from just a session.
-//     svc := pricing.New(mySession)
 //
-//     // Create a Pricing client with additional configuration
-//     svc := pricing.New(mySession, aws.NewConfig().WithRegion("us-west-2"))
+//	mySession := session.Must(session.NewSession())
+//
+//	// Create a Pricing client from just a session.
+//	svc := pricing.New(mySession)
+//
+//	// Create a Pricing client with additional configuration
+//	svc := pricing.New(mySession, aws.NewConfig().WithRegion("us-west-2"))
 func New(p client.ConfigProvider, cfgs ...*aws.Config) *Pricing {
 	c := p.ClientConfig(EndpointsID, cfgs...)
 	if c.SigningNameDerived || len(c.SigningName) == 0 {
 		c.SigningName = "pricing"
 	}
-	return newClient(*c.Config, c.Handlers, c.Endpoint, c.SigningRegion, c.SigningName)
+	return newClient(*c.Config, c.Handlers, c.PartitionID, c.Endpoint, c.SigningRegion, c.SigningName, c.ResolvedRegion)
 }
 
 // newClient creates, initializes and returns a new service client instance.
-func newClient(cfg aws.Config, handlers request.Handlers, endpoint, signingRegion, signingName string) *Pricing {
+func newClient(cfg aws.Config, handlers request.Handlers, partitionID, endpoint, signingRegion, signingName, resolvedRegion string) *Pricing {
 	svc := &Pricing{
 		Client: client.New(
 			cfg,
 			metadata.ClientInfo{
-				ServiceName:   ServiceName,
-				ServiceID:     ServiceID,
-				SigningName:   signingName,
-				SigningRegion: signingRegion,
-				Endpoint:      endpoint,
-				APIVersion:    "2017-10-15",
-				JSONVersion:   "1.1",
-				TargetPrefix:  "AWSPriceListService",
+				ServiceName:    ServiceName,
+				ServiceID:      ServiceID,
+				SigningName:    signingName,
+				SigningRegion:  signingRegion,
+				PartitionID:    partitionID,
+				Endpoint:       endpoint,
+				APIVersion:     "2017-10-15",
+				ResolvedRegion: resolvedRegion,
+				JSONVersion:    "1.1",
+				TargetPrefix:   "AWSPriceListService",
 			},
 			handlers,
 		),
@@ -76,7 +82,9 @@ func newClient(cfg aws.Config, handlers request.Handlers, endpoint, signingRegio
 	svc.Handlers.Build.PushBackNamed(jsonrpc.BuildHandler)
 	svc.Handlers.Unmarshal.PushBackNamed(jsonrpc.UnmarshalHandler)
 	svc.Handlers.UnmarshalMeta.PushBackNamed(jsonrpc.UnmarshalMetaHandler)
-	svc.Handlers.UnmarshalError.PushBackNamed(jsonrpc.UnmarshalErrorHandler)
+	svc.Handlers.UnmarshalError.PushBackNamed(
+		protocol.NewUnmarshalErrorHandler(jsonrpc.NewUnmarshalTypedError(exceptionFromCode)).NamedHandler(),
+	)
 
 	// Run custom client initialization if present
 	if initClient != nil {

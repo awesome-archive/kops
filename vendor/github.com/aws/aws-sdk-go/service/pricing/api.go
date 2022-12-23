@@ -8,6 +8,7 @@ import (
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/aws/awsutil"
 	"github.com/aws/aws-sdk-go/aws/request"
+	"github.com/aws/aws-sdk-go/private/protocol"
 )
 
 const opDescribeServices = "DescribeServices"
@@ -26,14 +27,13 @@ const opDescribeServices = "DescribeServices"
 // This method is useful when you want to inject custom logic or configuration
 // into the SDK's request lifecycle. Such as custom headers, or retry logic.
 //
+//	// Example sending a request using the DescribeServicesRequest method.
+//	req, resp := client.DescribeServicesRequest(params)
 //
-//    // Example sending a request using the DescribeServicesRequest method.
-//    req, resp := client.DescribeServicesRequest(params)
-//
-//    err := req.Send()
-//    if err == nil { // resp is now filled
-//        fmt.Println(resp)
-//    }
+//	err := req.Send()
+//	if err == nil { // resp is now filled
+//	    fmt.Println(resp)
+//	}
 //
 // See also, https://docs.aws.amazon.com/goto/WebAPI/pricing-2017-10-15/DescribeServices
 func (c *Pricing) DescribeServicesRequest(input *DescribeServicesInput) (req *request.Request, output *DescribeServicesOutput) {
@@ -74,22 +74,23 @@ func (c *Pricing) DescribeServicesRequest(input *DescribeServicesInput) (req *re
 // See the AWS API reference guide for AWS Price List Service's
 // API operation DescribeServices for usage and error information.
 //
-// Returned Error Codes:
-//   * ErrCodeInternalErrorException "InternalErrorException"
-//   An error on the server occurred during the processing of your request. Try
-//   again later.
+// Returned Error Types:
 //
-//   * ErrCodeInvalidParameterException "InvalidParameterException"
-//   One or more parameters had an invalid value.
+//   - InternalErrorException
+//     An error on the server occurred during the processing of your request. Try
+//     again later.
 //
-//   * ErrCodeNotFoundException "NotFoundException"
-//   The requested resource can't be found.
+//   - InvalidParameterException
+//     One or more parameters had an invalid value.
 //
-//   * ErrCodeInvalidNextTokenException "InvalidNextTokenException"
-//   The pagination token is invalid. Try again without a pagination token.
+//   - NotFoundException
+//     The requested resource can't be found.
 //
-//   * ErrCodeExpiredNextTokenException "ExpiredNextTokenException"
-//   The pagination token expired. Try again without a pagination token.
+//   - InvalidNextTokenException
+//     The pagination token is invalid. Try again without a pagination token.
+//
+//   - ExpiredNextTokenException
+//     The pagination token expired. Try again without a pagination token.
 //
 // See also, https://docs.aws.amazon.com/goto/WebAPI/pricing-2017-10-15/DescribeServices
 func (c *Pricing) DescribeServices(input *DescribeServicesInput) (*DescribeServicesOutput, error) {
@@ -121,15 +122,14 @@ func (c *Pricing) DescribeServicesWithContext(ctx aws.Context, input *DescribeSe
 //
 // Note: This operation can generate multiple requests to a service.
 //
-//    // Example iterating over at most 3 pages of a DescribeServices operation.
-//    pageNum := 0
-//    err := client.DescribeServicesPages(params,
-//        func(page *DescribeServicesOutput, lastPage bool) bool {
-//            pageNum++
-//            fmt.Println(page)
-//            return pageNum <= 3
-//        })
-//
+//	// Example iterating over at most 3 pages of a DescribeServices operation.
+//	pageNum := 0
+//	err := client.DescribeServicesPages(params,
+//	    func(page *pricing.DescribeServicesOutput, lastPage bool) bool {
+//	        pageNum++
+//	        fmt.Println(page)
+//	        return pageNum <= 3
+//	    })
 func (c *Pricing) DescribeServicesPages(input *DescribeServicesInput, fn func(*DescribeServicesOutput, bool) bool) error {
 	return c.DescribeServicesPagesWithContext(aws.BackgroundContext(), input, fn)
 }
@@ -156,10 +156,12 @@ func (c *Pricing) DescribeServicesPagesWithContext(ctx aws.Context, input *Descr
 		},
 	}
 
-	cont := true
-	for p.Next() && cont {
-		cont = fn(p.Page().(*DescribeServicesOutput), !p.HasNextPage())
+	for p.Next() {
+		if !fn(p.Page().(*DescribeServicesOutput), !p.HasNextPage()) {
+			break
+		}
 	}
+
 	return p.Err()
 }
 
@@ -179,14 +181,13 @@ const opGetAttributeValues = "GetAttributeValues"
 // This method is useful when you want to inject custom logic or configuration
 // into the SDK's request lifecycle. Such as custom headers, or retry logic.
 //
+//	// Example sending a request using the GetAttributeValuesRequest method.
+//	req, resp := client.GetAttributeValuesRequest(params)
 //
-//    // Example sending a request using the GetAttributeValuesRequest method.
-//    req, resp := client.GetAttributeValuesRequest(params)
-//
-//    err := req.Send()
-//    if err == nil { // resp is now filled
-//        fmt.Println(resp)
-//    }
+//	err := req.Send()
+//	if err == nil { // resp is now filled
+//	    fmt.Println(resp)
+//	}
 //
 // See also, https://docs.aws.amazon.com/goto/WebAPI/pricing-2017-10-15/GetAttributeValues
 func (c *Pricing) GetAttributeValuesRequest(input *GetAttributeValuesInput) (req *request.Request, output *GetAttributeValuesOutput) {
@@ -213,10 +214,10 @@ func (c *Pricing) GetAttributeValuesRequest(input *GetAttributeValuesInput) (req
 
 // GetAttributeValues API operation for AWS Price List Service.
 //
-// Returns a list of attribute values. Attibutes are similar to the details
+// Returns a list of attribute values. Attributes are similar to the details
 // in a Price List API offer file. For a list of available attributes, see Offer
-// File Definitions (http://docs.aws.amazon.com/awsaccountbilling/latest/aboutv2/reading-an-offer.html#pps-defs)
-// in the AWS Billing and Cost Management User Guide (http://docs.aws.amazon.com/awsaccountbilling/latest/aboutv2/billing-what-is.html).
+// File Definitions (https://docs.aws.amazon.com/awsaccountbilling/latest/aboutv2/reading-an-offer.html#pps-defs)
+// in the Billing and Cost Management User Guide (https://docs.aws.amazon.com/awsaccountbilling/latest/aboutv2/billing-what-is.html).
 //
 // Returns awserr.Error for service API and SDK errors. Use runtime type assertions
 // with awserr.Error's Code and Message methods to get detailed information about
@@ -225,22 +226,23 @@ func (c *Pricing) GetAttributeValuesRequest(input *GetAttributeValuesInput) (req
 // See the AWS API reference guide for AWS Price List Service's
 // API operation GetAttributeValues for usage and error information.
 //
-// Returned Error Codes:
-//   * ErrCodeInternalErrorException "InternalErrorException"
-//   An error on the server occurred during the processing of your request. Try
-//   again later.
+// Returned Error Types:
 //
-//   * ErrCodeInvalidParameterException "InvalidParameterException"
-//   One or more parameters had an invalid value.
+//   - InternalErrorException
+//     An error on the server occurred during the processing of your request. Try
+//     again later.
 //
-//   * ErrCodeNotFoundException "NotFoundException"
-//   The requested resource can't be found.
+//   - InvalidParameterException
+//     One or more parameters had an invalid value.
 //
-//   * ErrCodeInvalidNextTokenException "InvalidNextTokenException"
-//   The pagination token is invalid. Try again without a pagination token.
+//   - NotFoundException
+//     The requested resource can't be found.
 //
-//   * ErrCodeExpiredNextTokenException "ExpiredNextTokenException"
-//   The pagination token expired. Try again without a pagination token.
+//   - InvalidNextTokenException
+//     The pagination token is invalid. Try again without a pagination token.
+//
+//   - ExpiredNextTokenException
+//     The pagination token expired. Try again without a pagination token.
 //
 // See also, https://docs.aws.amazon.com/goto/WebAPI/pricing-2017-10-15/GetAttributeValues
 func (c *Pricing) GetAttributeValues(input *GetAttributeValuesInput) (*GetAttributeValuesOutput, error) {
@@ -272,15 +274,14 @@ func (c *Pricing) GetAttributeValuesWithContext(ctx aws.Context, input *GetAttri
 //
 // Note: This operation can generate multiple requests to a service.
 //
-//    // Example iterating over at most 3 pages of a GetAttributeValues operation.
-//    pageNum := 0
-//    err := client.GetAttributeValuesPages(params,
-//        func(page *GetAttributeValuesOutput, lastPage bool) bool {
-//            pageNum++
-//            fmt.Println(page)
-//            return pageNum <= 3
-//        })
-//
+//	// Example iterating over at most 3 pages of a GetAttributeValues operation.
+//	pageNum := 0
+//	err := client.GetAttributeValuesPages(params,
+//	    func(page *pricing.GetAttributeValuesOutput, lastPage bool) bool {
+//	        pageNum++
+//	        fmt.Println(page)
+//	        return pageNum <= 3
+//	    })
 func (c *Pricing) GetAttributeValuesPages(input *GetAttributeValuesInput, fn func(*GetAttributeValuesOutput, bool) bool) error {
 	return c.GetAttributeValuesPagesWithContext(aws.BackgroundContext(), input, fn)
 }
@@ -307,10 +308,12 @@ func (c *Pricing) GetAttributeValuesPagesWithContext(ctx aws.Context, input *Get
 		},
 	}
 
-	cont := true
-	for p.Next() && cont {
-		cont = fn(p.Page().(*GetAttributeValuesOutput), !p.HasNextPage())
+	for p.Next() {
+		if !fn(p.Page().(*GetAttributeValuesOutput), !p.HasNextPage()) {
+			break
+		}
 	}
+
 	return p.Err()
 }
 
@@ -330,14 +333,13 @@ const opGetProducts = "GetProducts"
 // This method is useful when you want to inject custom logic or configuration
 // into the SDK's request lifecycle. Such as custom headers, or retry logic.
 //
+//	// Example sending a request using the GetProductsRequest method.
+//	req, resp := client.GetProductsRequest(params)
 //
-//    // Example sending a request using the GetProductsRequest method.
-//    req, resp := client.GetProductsRequest(params)
-//
-//    err := req.Send()
-//    if err == nil { // resp is now filled
-//        fmt.Println(resp)
-//    }
+//	err := req.Send()
+//	if err == nil { // resp is now filled
+//	    fmt.Println(resp)
+//	}
 //
 // See also, https://docs.aws.amazon.com/goto/WebAPI/pricing-2017-10-15/GetProducts
 func (c *Pricing) GetProductsRequest(input *GetProductsInput) (req *request.Request, output *GetProductsOutput) {
@@ -373,22 +375,23 @@ func (c *Pricing) GetProductsRequest(input *GetProductsInput) (req *request.Requ
 // See the AWS API reference guide for AWS Price List Service's
 // API operation GetProducts for usage and error information.
 //
-// Returned Error Codes:
-//   * ErrCodeInternalErrorException "InternalErrorException"
-//   An error on the server occurred during the processing of your request. Try
-//   again later.
+// Returned Error Types:
 //
-//   * ErrCodeInvalidParameterException "InvalidParameterException"
-//   One or more parameters had an invalid value.
+//   - InternalErrorException
+//     An error on the server occurred during the processing of your request. Try
+//     again later.
 //
-//   * ErrCodeNotFoundException "NotFoundException"
-//   The requested resource can't be found.
+//   - InvalidParameterException
+//     One or more parameters had an invalid value.
 //
-//   * ErrCodeInvalidNextTokenException "InvalidNextTokenException"
-//   The pagination token is invalid. Try again without a pagination token.
+//   - NotFoundException
+//     The requested resource can't be found.
 //
-//   * ErrCodeExpiredNextTokenException "ExpiredNextTokenException"
-//   The pagination token expired. Try again without a pagination token.
+//   - InvalidNextTokenException
+//     The pagination token is invalid. Try again without a pagination token.
+//
+//   - ExpiredNextTokenException
+//     The pagination token expired. Try again without a pagination token.
 //
 // See also, https://docs.aws.amazon.com/goto/WebAPI/pricing-2017-10-15/GetProducts
 func (c *Pricing) GetProducts(input *GetProductsInput) (*GetProductsOutput, error) {
@@ -420,15 +423,14 @@ func (c *Pricing) GetProductsWithContext(ctx aws.Context, input *GetProductsInpu
 //
 // Note: This operation can generate multiple requests to a service.
 //
-//    // Example iterating over at most 3 pages of a GetProducts operation.
-//    pageNum := 0
-//    err := client.GetProductsPages(params,
-//        func(page *GetProductsOutput, lastPage bool) bool {
-//            pageNum++
-//            fmt.Println(page)
-//            return pageNum <= 3
-//        })
-//
+//	// Example iterating over at most 3 pages of a GetProducts operation.
+//	pageNum := 0
+//	err := client.GetProductsPages(params,
+//	    func(page *pricing.GetProductsOutput, lastPage bool) bool {
+//	        pageNum++
+//	        fmt.Println(page)
+//	        return pageNum <= 3
+//	    })
 func (c *Pricing) GetProductsPages(input *GetProductsInput, fn func(*GetProductsOutput, bool) bool) error {
 	return c.GetProductsPagesWithContext(aws.BackgroundContext(), input, fn)
 }
@@ -455,15 +457,17 @@ func (c *Pricing) GetProductsPagesWithContext(ctx aws.Context, input *GetProduct
 		},
 	}
 
-	cont := true
-	for p.Next() && cont {
-		cont = fn(p.Page().(*GetProductsOutput), !p.HasNextPage())
+	for p.Next() {
+		if !fn(p.Page().(*GetProductsOutput), !p.HasNextPage()) {
+			break
+		}
 	}
+
 	return p.Err()
 }
 
 // The values of a given attribute, such as Throughput Optimized HDD or Provisioned
-// IOPS for the Amazon EC2volumeType attribute.
+// IOPS for the Amazon EC2 volumeType attribute.
 type AttributeValue struct {
 	_ struct{} `type:"structure"`
 
@@ -471,12 +475,20 @@ type AttributeValue struct {
 	Value *string `type:"string"`
 }
 
-// String returns the string representation
+// String returns the string representation.
+//
+// API parameter values that are decorated as "sensitive" in the API will not
+// be included in the string output. The member name will be present, but the
+// value will be replaced with "sensitive".
 func (s AttributeValue) String() string {
 	return awsutil.Prettify(s)
 }
 
-// GoString returns the string representation
+// GoString returns the string representation.
+//
+// API parameter values that are decorated as "sensitive" in the API will not
+// be included in the string output. The member name will be present, but the
+// value will be replaced with "sensitive".
 func (s AttributeValue) GoString() string {
 	return s.String()
 }
@@ -508,12 +520,20 @@ type DescribeServicesInput struct {
 	ServiceCode *string `type:"string"`
 }
 
-// String returns the string representation
+// String returns the string representation.
+//
+// API parameter values that are decorated as "sensitive" in the API will not
+// be included in the string output. The member name will be present, but the
+// value will be replaced with "sensitive".
 func (s DescribeServicesInput) String() string {
 	return awsutil.Prettify(s)
 }
 
-// GoString returns the string representation
+// GoString returns the string representation.
+//
+// API parameter values that are decorated as "sensitive" in the API will not
+// be included in the string output. The member name will be present, but the
+// value will be replaced with "sensitive".
 func (s DescribeServicesInput) GoString() string {
 	return s.String()
 }
@@ -561,19 +581,27 @@ type DescribeServicesOutput struct {
 	// The format version of the response. For example, aws_v1.
 	FormatVersion *string `type:"string"`
 
-	// The pagination token for the next set of retreivable results.
+	// The pagination token for the next set of retrievable results.
 	NextToken *string `type:"string"`
 
 	// The service metadata for the service or services in the response.
 	Services []*Service `type:"list"`
 }
 
-// String returns the string representation
+// String returns the string representation.
+//
+// API parameter values that are decorated as "sensitive" in the API will not
+// be included in the string output. The member name will be present, but the
+// value will be replaced with "sensitive".
 func (s DescribeServicesOutput) String() string {
 	return awsutil.Prettify(s)
 }
 
-// GoString returns the string representation
+// GoString returns the string representation.
+//
+// API parameter values that are decorated as "sensitive" in the API will not
+// be included in the string output. The member name will be present, but the
+// value will be replaced with "sensitive".
 func (s DescribeServicesOutput) GoString() string {
 	return s.String()
 }
@@ -594,6 +622,70 @@ func (s *DescribeServicesOutput) SetNextToken(v string) *DescribeServicesOutput 
 func (s *DescribeServicesOutput) SetServices(v []*Service) *DescribeServicesOutput {
 	s.Services = v
 	return s
+}
+
+// The pagination token expired. Try again without a pagination token.
+type ExpiredNextTokenException struct {
+	_            struct{}                  `type:"structure"`
+	RespMetadata protocol.ResponseMetadata `json:"-" xml:"-"`
+
+	Message_ *string `locationName:"Message" type:"string"`
+}
+
+// String returns the string representation.
+//
+// API parameter values that are decorated as "sensitive" in the API will not
+// be included in the string output. The member name will be present, but the
+// value will be replaced with "sensitive".
+func (s ExpiredNextTokenException) String() string {
+	return awsutil.Prettify(s)
+}
+
+// GoString returns the string representation.
+//
+// API parameter values that are decorated as "sensitive" in the API will not
+// be included in the string output. The member name will be present, but the
+// value will be replaced with "sensitive".
+func (s ExpiredNextTokenException) GoString() string {
+	return s.String()
+}
+
+func newErrorExpiredNextTokenException(v protocol.ResponseMetadata) error {
+	return &ExpiredNextTokenException{
+		RespMetadata: v,
+	}
+}
+
+// Code returns the exception type name.
+func (s *ExpiredNextTokenException) Code() string {
+	return "ExpiredNextTokenException"
+}
+
+// Message returns the exception's message.
+func (s *ExpiredNextTokenException) Message() string {
+	if s.Message_ != nil {
+		return *s.Message_
+	}
+	return ""
+}
+
+// OrigErr always returns nil, satisfies awserr.Error interface.
+func (s *ExpiredNextTokenException) OrigErr() error {
+	return nil
+}
+
+func (s *ExpiredNextTokenException) Error() string {
+	return fmt.Sprintf("%s: %s", s.Code(), s.Message())
+}
+
+// Status code returns the HTTP status code for the request's response error.
+func (s *ExpiredNextTokenException) StatusCode() int {
+	return s.RespMetadata.StatusCode
+}
+
+// RequestID returns the service's response RequestID for request.
+func (s *ExpiredNextTokenException) RequestID() string {
+	return s.RespMetadata.RequestID
 }
 
 // The constraints that you want all returned products to match.
@@ -631,12 +723,20 @@ type Filter struct {
 	Value *string `type:"string" required:"true"`
 }
 
-// String returns the string representation
+// String returns the string representation.
+//
+// API parameter values that are decorated as "sensitive" in the API will not
+// be included in the string output. The member name will be present, but the
+// value will be replaced with "sensitive".
 func (s Filter) String() string {
 	return awsutil.Prettify(s)
 }
 
-// GoString returns the string representation
+// GoString returns the string representation.
+//
+// API parameter values that are decorated as "sensitive" in the API will not
+// be included in the string output. The member name will be present, but the
+// value will be replaced with "sensitive".
 func (s Filter) GoString() string {
 	return s.String()
 }
@@ -701,12 +801,20 @@ type GetAttributeValuesInput struct {
 	ServiceCode *string `type:"string" required:"true"`
 }
 
-// String returns the string representation
+// String returns the string representation.
+//
+// API parameter values that are decorated as "sensitive" in the API will not
+// be included in the string output. The member name will be present, but the
+// value will be replaced with "sensitive".
 func (s GetAttributeValuesInput) String() string {
 	return awsutil.Prettify(s)
 }
 
-// GoString returns the string representation
+// GoString returns the string representation.
+//
+// API parameter values that are decorated as "sensitive" in the API will not
+// be included in the string output. The member name will be present, but the
+// value will be replaced with "sensitive".
 func (s GetAttributeValuesInput) GoString() string {
 	return s.String()
 }
@@ -758,19 +866,27 @@ type GetAttributeValuesOutput struct {
 	_ struct{} `type:"structure"`
 
 	// The list of values for an attribute. For example, Throughput Optimized HDD
-	// and Provisioned IOPS are two available values for the AmazonEC2volumeType.
+	// and Provisioned IOPS are two available values for the AmazonEC2 volumeType.
 	AttributeValues []*AttributeValue `type:"list"`
 
 	// The pagination token that indicates the next set of results to retrieve.
 	NextToken *string `type:"string"`
 }
 
-// String returns the string representation
+// String returns the string representation.
+//
+// API parameter values that are decorated as "sensitive" in the API will not
+// be included in the string output. The member name will be present, but the
+// value will be replaced with "sensitive".
 func (s GetAttributeValuesOutput) String() string {
 	return awsutil.Prettify(s)
 }
 
-// GoString returns the string representation
+// GoString returns the string representation.
+//
+// API parameter values that are decorated as "sensitive" in the API will not
+// be included in the string output. The member name will be present, but the
+// value will be replaced with "sensitive".
 func (s GetAttributeValuesOutput) GoString() string {
 	return s.String()
 }
@@ -807,15 +923,25 @@ type GetProductsInput struct {
 	NextToken *string `type:"string"`
 
 	// The code for the service whose products you want to retrieve.
-	ServiceCode *string `type:"string"`
+	//
+	// ServiceCode is a required field
+	ServiceCode *string `type:"string" required:"true"`
 }
 
-// String returns the string representation
+// String returns the string representation.
+//
+// API parameter values that are decorated as "sensitive" in the API will not
+// be included in the string output. The member name will be present, but the
+// value will be replaced with "sensitive".
 func (s GetProductsInput) String() string {
 	return awsutil.Prettify(s)
 }
 
-// GoString returns the string representation
+// GoString returns the string representation.
+//
+// API parameter values that are decorated as "sensitive" in the API will not
+// be included in the string output. The member name will be present, but the
+// value will be replaced with "sensitive".
 func (s GetProductsInput) GoString() string {
 	return s.String()
 }
@@ -825,6 +951,9 @@ func (s *GetProductsInput) Validate() error {
 	invalidParams := request.ErrInvalidParams{Context: "GetProductsInput"}
 	if s.MaxResults != nil && *s.MaxResults < 1 {
 		invalidParams.Add(request.NewErrParamMinValue("MaxResults", 1))
+	}
+	if s.ServiceCode == nil {
+		invalidParams.Add(request.NewErrParamRequired("ServiceCode"))
 	}
 	if s.Filters != nil {
 		for i, v := range s.Filters {
@@ -887,12 +1016,20 @@ type GetProductsOutput struct {
 	PriceList []aws.JSONValue `type:"list"`
 }
 
-// String returns the string representation
+// String returns the string representation.
+//
+// API parameter values that are decorated as "sensitive" in the API will not
+// be included in the string output. The member name will be present, but the
+// value will be replaced with "sensitive".
 func (s GetProductsOutput) String() string {
 	return awsutil.Prettify(s)
 }
 
-// GoString returns the string representation
+// GoString returns the string representation.
+//
+// API parameter values that are decorated as "sensitive" in the API will not
+// be included in the string output. The member name will be present, but the
+// value will be replaced with "sensitive".
 func (s GetProductsOutput) GoString() string {
 	return s.String()
 }
@@ -915,6 +1052,263 @@ func (s *GetProductsOutput) SetPriceList(v []aws.JSONValue) *GetProductsOutput {
 	return s
 }
 
+// An error on the server occurred during the processing of your request. Try
+// again later.
+type InternalErrorException struct {
+	_            struct{}                  `type:"structure"`
+	RespMetadata protocol.ResponseMetadata `json:"-" xml:"-"`
+
+	Message_ *string `locationName:"Message" type:"string"`
+}
+
+// String returns the string representation.
+//
+// API parameter values that are decorated as "sensitive" in the API will not
+// be included in the string output. The member name will be present, but the
+// value will be replaced with "sensitive".
+func (s InternalErrorException) String() string {
+	return awsutil.Prettify(s)
+}
+
+// GoString returns the string representation.
+//
+// API parameter values that are decorated as "sensitive" in the API will not
+// be included in the string output. The member name will be present, but the
+// value will be replaced with "sensitive".
+func (s InternalErrorException) GoString() string {
+	return s.String()
+}
+
+func newErrorInternalErrorException(v protocol.ResponseMetadata) error {
+	return &InternalErrorException{
+		RespMetadata: v,
+	}
+}
+
+// Code returns the exception type name.
+func (s *InternalErrorException) Code() string {
+	return "InternalErrorException"
+}
+
+// Message returns the exception's message.
+func (s *InternalErrorException) Message() string {
+	if s.Message_ != nil {
+		return *s.Message_
+	}
+	return ""
+}
+
+// OrigErr always returns nil, satisfies awserr.Error interface.
+func (s *InternalErrorException) OrigErr() error {
+	return nil
+}
+
+func (s *InternalErrorException) Error() string {
+	return fmt.Sprintf("%s: %s", s.Code(), s.Message())
+}
+
+// Status code returns the HTTP status code for the request's response error.
+func (s *InternalErrorException) StatusCode() int {
+	return s.RespMetadata.StatusCode
+}
+
+// RequestID returns the service's response RequestID for request.
+func (s *InternalErrorException) RequestID() string {
+	return s.RespMetadata.RequestID
+}
+
+// The pagination token is invalid. Try again without a pagination token.
+type InvalidNextTokenException struct {
+	_            struct{}                  `type:"structure"`
+	RespMetadata protocol.ResponseMetadata `json:"-" xml:"-"`
+
+	Message_ *string `locationName:"Message" type:"string"`
+}
+
+// String returns the string representation.
+//
+// API parameter values that are decorated as "sensitive" in the API will not
+// be included in the string output. The member name will be present, but the
+// value will be replaced with "sensitive".
+func (s InvalidNextTokenException) String() string {
+	return awsutil.Prettify(s)
+}
+
+// GoString returns the string representation.
+//
+// API parameter values that are decorated as "sensitive" in the API will not
+// be included in the string output. The member name will be present, but the
+// value will be replaced with "sensitive".
+func (s InvalidNextTokenException) GoString() string {
+	return s.String()
+}
+
+func newErrorInvalidNextTokenException(v protocol.ResponseMetadata) error {
+	return &InvalidNextTokenException{
+		RespMetadata: v,
+	}
+}
+
+// Code returns the exception type name.
+func (s *InvalidNextTokenException) Code() string {
+	return "InvalidNextTokenException"
+}
+
+// Message returns the exception's message.
+func (s *InvalidNextTokenException) Message() string {
+	if s.Message_ != nil {
+		return *s.Message_
+	}
+	return ""
+}
+
+// OrigErr always returns nil, satisfies awserr.Error interface.
+func (s *InvalidNextTokenException) OrigErr() error {
+	return nil
+}
+
+func (s *InvalidNextTokenException) Error() string {
+	return fmt.Sprintf("%s: %s", s.Code(), s.Message())
+}
+
+// Status code returns the HTTP status code for the request's response error.
+func (s *InvalidNextTokenException) StatusCode() int {
+	return s.RespMetadata.StatusCode
+}
+
+// RequestID returns the service's response RequestID for request.
+func (s *InvalidNextTokenException) RequestID() string {
+	return s.RespMetadata.RequestID
+}
+
+// One or more parameters had an invalid value.
+type InvalidParameterException struct {
+	_            struct{}                  `type:"structure"`
+	RespMetadata protocol.ResponseMetadata `json:"-" xml:"-"`
+
+	Message_ *string `locationName:"Message" type:"string"`
+}
+
+// String returns the string representation.
+//
+// API parameter values that are decorated as "sensitive" in the API will not
+// be included in the string output. The member name will be present, but the
+// value will be replaced with "sensitive".
+func (s InvalidParameterException) String() string {
+	return awsutil.Prettify(s)
+}
+
+// GoString returns the string representation.
+//
+// API parameter values that are decorated as "sensitive" in the API will not
+// be included in the string output. The member name will be present, but the
+// value will be replaced with "sensitive".
+func (s InvalidParameterException) GoString() string {
+	return s.String()
+}
+
+func newErrorInvalidParameterException(v protocol.ResponseMetadata) error {
+	return &InvalidParameterException{
+		RespMetadata: v,
+	}
+}
+
+// Code returns the exception type name.
+func (s *InvalidParameterException) Code() string {
+	return "InvalidParameterException"
+}
+
+// Message returns the exception's message.
+func (s *InvalidParameterException) Message() string {
+	if s.Message_ != nil {
+		return *s.Message_
+	}
+	return ""
+}
+
+// OrigErr always returns nil, satisfies awserr.Error interface.
+func (s *InvalidParameterException) OrigErr() error {
+	return nil
+}
+
+func (s *InvalidParameterException) Error() string {
+	return fmt.Sprintf("%s: %s", s.Code(), s.Message())
+}
+
+// Status code returns the HTTP status code for the request's response error.
+func (s *InvalidParameterException) StatusCode() int {
+	return s.RespMetadata.StatusCode
+}
+
+// RequestID returns the service's response RequestID for request.
+func (s *InvalidParameterException) RequestID() string {
+	return s.RespMetadata.RequestID
+}
+
+// The requested resource can't be found.
+type NotFoundException struct {
+	_            struct{}                  `type:"structure"`
+	RespMetadata protocol.ResponseMetadata `json:"-" xml:"-"`
+
+	Message_ *string `locationName:"Message" type:"string"`
+}
+
+// String returns the string representation.
+//
+// API parameter values that are decorated as "sensitive" in the API will not
+// be included in the string output. The member name will be present, but the
+// value will be replaced with "sensitive".
+func (s NotFoundException) String() string {
+	return awsutil.Prettify(s)
+}
+
+// GoString returns the string representation.
+//
+// API parameter values that are decorated as "sensitive" in the API will not
+// be included in the string output. The member name will be present, but the
+// value will be replaced with "sensitive".
+func (s NotFoundException) GoString() string {
+	return s.String()
+}
+
+func newErrorNotFoundException(v protocol.ResponseMetadata) error {
+	return &NotFoundException{
+		RespMetadata: v,
+	}
+}
+
+// Code returns the exception type name.
+func (s *NotFoundException) Code() string {
+	return "NotFoundException"
+}
+
+// Message returns the exception's message.
+func (s *NotFoundException) Message() string {
+	if s.Message_ != nil {
+		return *s.Message_
+	}
+	return ""
+}
+
+// OrigErr always returns nil, satisfies awserr.Error interface.
+func (s *NotFoundException) OrigErr() error {
+	return nil
+}
+
+func (s *NotFoundException) Error() string {
+	return fmt.Sprintf("%s: %s", s.Code(), s.Message())
+}
+
+// Status code returns the HTTP status code for the request's response error.
+func (s *NotFoundException) StatusCode() int {
+	return s.RespMetadata.StatusCode
+}
+
+// RequestID returns the service's response RequestID for request.
+func (s *NotFoundException) RequestID() string {
+	return s.RespMetadata.RequestID
+}
+
 // The metadata for a service, such as the service code and available attribute
 // names.
 type Service struct {
@@ -923,16 +1317,26 @@ type Service struct {
 	// The attributes that are available for this service.
 	AttributeNames []*string `type:"list"`
 
-	// The code for the AWS service.
-	ServiceCode *string `type:"string"`
+	// The code for the Amazon Web Services service.
+	//
+	// ServiceCode is a required field
+	ServiceCode *string `type:"string" required:"true"`
 }
 
-// String returns the string representation
+// String returns the string representation.
+//
+// API parameter values that are decorated as "sensitive" in the API will not
+// be included in the string output. The member name will be present, but the
+// value will be replaced with "sensitive".
 func (s Service) String() string {
 	return awsutil.Prettify(s)
 }
 
-// GoString returns the string representation
+// GoString returns the string representation.
+//
+// API parameter values that are decorated as "sensitive" in the API will not
+// be included in the string output. The member name will be present, but the
+// value will be replaced with "sensitive".
 func (s Service) GoString() string {
 	return s.String()
 }
@@ -953,3 +1357,10 @@ const (
 	// FilterTypeTermMatch is a FilterType enum value
 	FilterTypeTermMatch = "TERM_MATCH"
 )
+
+// FilterType_Values returns all elements of the FilterType enum
+func FilterType_Values() []string {
+	return []string{
+		FilterTypeTermMatch,
+	}
+}

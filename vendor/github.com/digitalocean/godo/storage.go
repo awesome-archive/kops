@@ -1,12 +1,10 @@
 package godo
 
 import (
+	"context"
 	"fmt"
-	"time"
-
 	"net/http"
-
-	"github.com/digitalocean/godo/context"
+	"time"
 )
 
 const (
@@ -17,7 +15,7 @@ const (
 
 // StorageService is an interface for interfacing with the storage
 // endpoints of the Digital Ocean API.
-// See: https://developers.digitalocean.com/documentation/v2#storage
+// See: https://docs.digitalocean.com/reference/api/api-reference/#tag/Block-Storage
 type StorageService interface {
 	ListVolumes(context.Context, *ListVolumeParams) ([]Volume, *Response, error)
 	GetVolume(context.Context, string) (*Volume, *Response, error)
@@ -46,22 +44,31 @@ var _ StorageService = &StorageServiceOp{}
 
 // Volume represents a Digital Ocean block store volume.
 type Volume struct {
-	ID            string    `json:"id"`
-	Region        *Region   `json:"region"`
-	Name          string    `json:"name"`
-	SizeGigaBytes int64     `json:"size_gigabytes"`
-	Description   string    `json:"description"`
-	DropletIDs    []int     `json:"droplet_ids"`
-	CreatedAt     time.Time `json:"created_at"`
+	ID              string    `json:"id"`
+	Region          *Region   `json:"region"`
+	Name            string    `json:"name"`
+	SizeGigaBytes   int64     `json:"size_gigabytes"`
+	Description     string    `json:"description"`
+	DropletIDs      []int     `json:"droplet_ids"`
+	CreatedAt       time.Time `json:"created_at"`
+	FilesystemType  string    `json:"filesystem_type"`
+	FilesystemLabel string    `json:"filesystem_label"`
+	Tags            []string  `json:"tags"`
 }
 
 func (f Volume) String() string {
 	return Stringify(f)
 }
 
+// URN returns the volume ID as a valid DO API URN
+func (f Volume) URN() string {
+	return ToURN("Volume", f.ID)
+}
+
 type storageVolumesRoot struct {
 	Volumes []Volume `json:"volumes"`
 	Links   *Links   `json:"links"`
+	Meta    *Meta    `json:"meta"`
 }
 
 type storageVolumeRoot struct {
@@ -72,11 +79,14 @@ type storageVolumeRoot struct {
 // VolumeCreateRequest represents a request to create a block store
 // volume.
 type VolumeCreateRequest struct {
-	Region        string `json:"region"`
-	Name          string `json:"name"`
-	Description   string `json:"description"`
-	SizeGigaBytes int64  `json:"size_gigabytes"`
-	SnapshotID    string `json:"snapshot_id"`
+	Region          string   `json:"region"`
+	Name            string   `json:"name"`
+	Description     string   `json:"description"`
+	SizeGigaBytes   int64    `json:"size_gigabytes"`
+	SnapshotID      string   `json:"snapshot_id"`
+	FilesystemType  string   `json:"filesystem_type"`
+	FilesystemLabel string   `json:"filesystem_label"`
+	Tags            []string `json:"tags"`
 }
 
 // ListVolumes lists all storage volumes.
@@ -85,6 +95,10 @@ func (svc *StorageServiceOp) ListVolumes(ctx context.Context, params *ListVolume
 	if params != nil {
 		if params.Region != "" && params.Name != "" {
 			path = fmt.Sprintf("%s?name=%s&region=%s", path, params.Name, params.Region)
+		} else if params.Region != "" {
+			path = fmt.Sprintf("%s?region=%s", path, params.Region)
+		} else if params.Name != "" {
+			path = fmt.Sprintf("%s?name=%s", path, params.Name)
 		}
 
 		if params.ListOptions != nil {
@@ -109,6 +123,9 @@ func (svc *StorageServiceOp) ListVolumes(ctx context.Context, params *ListVolume
 
 	if l := root.Links; l != nil {
 		resp.Links = l
+	}
+	if m := root.Meta; m != nil {
+		resp.Meta = m
 	}
 
 	return root.Volumes, resp, nil
@@ -163,9 +180,10 @@ func (svc *StorageServiceOp) DeleteVolume(ctx context.Context, id string) (*Resp
 // SnapshotCreateRequest represents a request to create a block store
 // volume.
 type SnapshotCreateRequest struct {
-	VolumeID    string `json:"volume_id"`
-	Name        string `json:"name"`
-	Description string `json:"description"`
+	VolumeID    string   `json:"volume_id"`
+	Name        string   `json:"name"`
+	Description string   `json:"description"`
+	Tags        []string `json:"tags"`
 }
 
 // ListSnapshots lists all snapshots related to a storage volume.
@@ -189,6 +207,9 @@ func (svc *StorageServiceOp) ListSnapshots(ctx context.Context, volumeID string,
 
 	if l := root.Links; l != nil {
 		resp.Links = l
+	}
+	if m := root.Meta; m != nil {
+		resp.Meta = m
 	}
 
 	return root.Snapshots, resp, nil

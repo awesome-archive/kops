@@ -1,5 +1,5 @@
 /*
-Copyright 2016 The Kubernetes Authors.
+Copyright 2019 The Kubernetes Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -18,194 +18,149 @@ package protokube
 
 import (
 	"context"
+	"errors"
 	"fmt"
-	"io/ioutil"
+	"io"
 	"net"
 	"net/http"
 	"os"
 	"strconv"
 	"strings"
-	"time"
 
 	"github.com/digitalocean/godo"
+	"golang.org/x/oauth2"
 
-	"k8s.io/kops/pkg/resources/digitalocean"
 	"k8s.io/kops/protokube/pkg/etcd"
+	"k8s.io/kops/protokube/pkg/gossip"
+	gossipdo "k8s.io/kops/protokube/pkg/gossip/do"
 )
 
 const (
 	dropletRegionMetadataURL     = "http://169.254.169.254/metadata/v1/region"
 	dropletNameMetadataURL       = "http://169.254.169.254/metadata/v1/hostname"
 	dropletIDMetadataURL         = "http://169.254.169.254/metadata/v1/id"
+	dropletIDMetadataTags        = "http://169.254.169.254/metadata/v1/tags"
 	dropletInternalIPMetadataURL = "http://169.254.169.254/metadata/v1/interfaces/private/0/ipv4/address"
-	localDevicePrefix            = "/dev/disk/by-id/scsi-0DO_Volume_"
 )
 
-type DOVolumes struct {
-	ClusterID string
-	Cloud     *digitalocean.Cloud
+// TokenSource implements oauth2.TokenSource
+type TokenSource struct {
+	AccessToken string
+}
+
+type DOCloudProvider struct {
+	ClusterID  string
+	godoClient *godo.Client
 
 	region      string
 	dropletName string
 	dropletID   int
+	dropletIP   net.IP
+	dropletTags []string
 }
 
-var _ Volumes = &DOVolumes{}
+var _ CloudProvider = &DOCloudProvider{}
 
-func NewDOVolumes(clusterID string) (*DOVolumes, error) {
+func GetClusterID() (string, error) {
+	clusterID := ""
+
+	dropletTags, err := getMetadataDropletTags()
+	if err != nil {
+		return clusterID, fmt.Errorf("GetClusterID failed - unable to retrieve droplet tags: %s", err)
+	}
+
+	for _, dropletTag := range dropletTags {
+		if strings.Contains(dropletTag, "KubernetesCluster:") {
+			clusterID = strings.Replace(dropletTag, ".", "-", -1)
+
+			tokens := strings.Split(clusterID, ":")
+			if len(tokens) != 2 {
+				return clusterID, fmt.Errorf("invalid clusterID (expected two tokens): %q", clusterID)
+			}
+
+			clusterID := tokens[1]
+
+			return clusterID, nil
+		}
+	}
+
+	return clusterID, fmt.Errorf("failed to get droplet clusterID")
+}
+
+func NewDOCloudProvider() (*DOCloudProvider, error) {
 	region, err := getMetadataRegion()
 	if err != nil {
 		return nil, fmt.Errorf("failed to get droplet region: %s", err)
 	}
 
-	dropletID, err := getMetadataDropletID()
+	dropletIDStr, err := getMetadataDropletID()
 	if err != nil {
 		return nil, fmt.Errorf("failed to get droplet id: %s", err)
 	}
-
-	dropletIDInt, err := strconv.Atoi(dropletID)
+	dropletID, err := strconv.Atoi(dropletIDStr)
 	if err != nil {
 		return nil, fmt.Errorf("failed to convert droplet ID to int: %s", err)
 	}
+
+	dropletIPStr, err := getMetadata(dropletInternalIPMetadataURL)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get droplet ip: %s", err)
+	}
+	dropletIP := net.ParseIP(dropletIPStr)
 
 	dropletName, err := getMetadataDropletName()
 	if err != nil {
 		return nil, fmt.Errorf("failed to get droplet name: %s", err)
 	}
 
-	cloud, err := digitalocean.NewCloud(region)
+	godoClient, err := NewDOCloud()
 	if err != nil {
 		return nil, fmt.Errorf("failed to initialize digitalocean cloud: %s", err)
 	}
 
-	return &DOVolumes{
-		Cloud:       cloud,
+	dropletTags, err := getMetadataDropletTags()
+	if err != nil {
+		return nil, fmt.Errorf("failed to get droplet tags: %s", err)
+	}
+
+	clusterID, err := GetClusterID()
+	if err != nil {
+		return nil, fmt.Errorf("failed to get clusterID: %s", err)
+	}
+
+	return &DOCloudProvider{
+		godoClient:  godoClient,
 		ClusterID:   clusterID,
-		dropletID:   dropletIDInt,
+		dropletID:   dropletID,
+		dropletIP:   dropletIP,
 		dropletName: dropletName,
 		region:      region,
+		dropletTags: dropletTags,
 	}, nil
 }
 
-func (d *DOVolumes) AttachVolume(volume *Volume) error {
-	for {
-		action, _, err := d.Cloud.VolumeActions().Attach(context.TODO(), volume.ID, d.dropletID)
-		if err != nil {
-			return fmt.Errorf("error attaching volume: %s", err)
-		}
-
-		if action.Status != godo.ActionInProgress && action.Status != godo.ActionCompleted {
-			return fmt.Errorf("invalid status for digitalocean volume: %s", volume.ID)
-		}
-
-		doVolume, err := d.getVolumeByID(volume.ID)
-		if err != nil {
-			return fmt.Errorf("error getting volume status: %s", err)
-		}
-
-		if len(doVolume.DropletIDs) == 1 {
-			if doVolume.DropletIDs[0] != d.dropletID {
-				return fmt.Errorf("digitalocean volume %s is attached to another droplet", doVolume.ID)
-			}
-
-			volume.LocalDevice = getLocalDeviceName(doVolume)
-			return nil
-		}
-
-		time.Sleep(10 * time.Second)
+// Token() returns oauth2.Token
+func (t *TokenSource) Token() (*oauth2.Token, error) {
+	token := &oauth2.Token{
+		AccessToken: t.AccessToken,
 	}
-
+	return token, nil
 }
 
-func (d *DOVolumes) FindVolumes() ([]*Volume, error) {
-	doVolumes, err := getAllVolumesByRegion(d.Cloud, d.region)
-	if err != nil {
-		return nil, fmt.Errorf("failed to list volumes: %s", err)
+func NewDOCloud() (*godo.Client, error) {
+	accessToken := os.Getenv("DIGITALOCEAN_ACCESS_TOKEN")
+	if accessToken == "" {
+		return nil, errors.New("DIGITALOCEAN_ACCESS_TOKEN is required")
 	}
 
-	var volumes []*Volume
-	for _, doVolume := range doVolumes {
-		// determine if this volume belongs to this cluster
-		// check for string d.ClusterID but with strings "." replaced with "-"
-		if !strings.Contains(doVolume.Name, strings.Replace(d.ClusterID, ".", "-", -1)) {
-			continue
-		}
-
-		vol := &Volume{
-			ID: doVolume.ID,
-			Info: VolumeInfo{
-				Description: doVolume.Description,
-			},
-		}
-
-		if len(doVolume.DropletIDs) == 1 {
-			vol.AttachedTo = strconv.Itoa(doVolume.DropletIDs[0])
-			vol.LocalDevice = getLocalDeviceName(&doVolume)
-		}
-
-		etcdClusterSpec, err := d.getEtcdClusterSpec(doVolume)
-		if err != nil {
-			return nil, fmt.Errorf("failed to get etcd cluster spec: %s", err)
-		}
-
-		vol.Info.EtcdClusters = append(vol.Info.EtcdClusters, etcdClusterSpec)
-		volumes = append(volumes, vol)
+	tokenSource := &TokenSource{
+		AccessToken: accessToken,
 	}
 
-	return volumes, nil
-}
+	oauthClient := oauth2.NewClient(context.TODO(), tokenSource)
+	client := godo.NewClient(oauthClient)
 
-func getAllVolumesByRegion(cloud *digitalocean.Cloud, region string) ([]godo.Volume, error) {
-	allVolumes := []godo.Volume{}
-
-	opt := &godo.ListOptions{}
-	for {
-		volumes, resp, err := cloud.Volumes().ListVolumes(context.TODO(), &godo.ListVolumeParams{
-			Region:      region,
-			ListOptions: opt,
-		})
-
-		if err != nil {
-			return nil, err
-		}
-
-		allVolumes = append(allVolumes, volumes...)
-
-		if resp.Links == nil || resp.Links.IsLastPage() {
-			break
-		}
-
-		page, err := resp.Links.CurrentPage()
-		if err != nil {
-			return nil, err
-		}
-
-		opt.Page = page + 1
-	}
-
-	return allVolumes, nil
-
-}
-
-func (d *DOVolumes) FindMountedVolume(volume *Volume) (string, error) {
-	device := volume.LocalDevice
-
-	_, err := os.Stat(pathFor(device))
-	if err == nil {
-		return device, nil
-	}
-
-	if !os.IsNotExist(err) {
-		return "", fmt.Errorf("error checking for device %q: %v", device, err)
-	}
-
-	return "", nil
-}
-
-func (d *DOVolumes) getVolumeByID(id string) (*godo.Volume, error) {
-	vol, _, err := d.Cloud.Volumes().GetVolume(context.TODO(), id)
-	return vol, err
-
+	return client, nil
 }
 
 // getEtcdClusterSpec returns etcd.EtcdClusterSpec which holds
@@ -214,7 +169,7 @@ func (d *DOVolumes) getVolumeByID(id string) (*godo.Volume, error) {
 // but in the future when it supports multiple masters this method be
 // updated to handle that case.
 // TODO: use tags once it's supported for volumes
-func (d *DOVolumes) getEtcdClusterSpec(vol godo.Volume) (*etcd.EtcdClusterSpec, error) {
+func (d *DOCloudProvider) getEtcdClusterSpec(vol godo.Volume) (*etcd.EtcdClusterSpec, error) {
 	nodeName := d.dropletName
 
 	var clusterKey string
@@ -233,19 +188,22 @@ func (d *DOVolumes) getEtcdClusterSpec(vol godo.Volume) (*etcd.EtcdClusterSpec, 
 	}, nil
 }
 
-func getLocalDeviceName(vol *godo.Volume) string {
-	return localDevicePrefix + vol.Name
-}
-
-// GetDropletInternalIP gets the private IP of the droplet running this program
-// This function is exported so it can be called from protokube
-func GetDropletInternalIP() (net.IP, error) {
-	addr, err := getMetadata(dropletInternalIPMetadataURL)
-	if err != nil {
-		return nil, err
+func (d *DOCloudProvider) GossipSeeds() (gossip.SeedProvider, error) {
+	for _, dropletTag := range d.dropletTags {
+		if strings.Contains(dropletTag, strings.Replace(d.ClusterID, ".", "-", -1)) {
+			return gossipdo.NewSeedProvider(d.godoClient, dropletTag)
+		}
 	}
 
-	return net.ParseIP(addr), nil
+	return nil, fmt.Errorf("could not determine a matching droplet tag for gossip seeding")
+}
+
+func (d *DOCloudProvider) InstanceID() string {
+	return d.dropletName
+}
+
+func (d *DOCloudProvider) InstanceInternalIP() net.IP {
+	return d.dropletIP
 }
 
 func getMetadataRegion() (string, error) {
@@ -260,6 +218,11 @@ func getMetadataDropletID() (string, error) {
 	return getMetadata(dropletIDMetadataURL)
 }
 
+func getMetadataDropletTags() ([]string, error) {
+	tagString, err := getMetadata(dropletIDMetadataTags)
+	return strings.Split(tagString, "\n"), err
+}
+
 func getMetadata(url string) (string, error) {
 	resp, err := http.Get(url)
 	if err != nil {
@@ -272,7 +235,7 @@ func getMetadata(url string) (string, error) {
 		return "", fmt.Errorf("droplet metadata returned non-200 status code: %d", resp.StatusCode)
 	}
 
-	bodyBytes, err := ioutil.ReadAll(resp.Body)
+	bodyBytes, err := io.ReadAll(resp.Body)
 	if err != nil {
 		return "", err
 	}

@@ -1,5 +1,5 @@
 /*
-Copyright 2018 The Kubernetes Authors.
+Copyright 2019 The Kubernetes Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -18,18 +18,20 @@ package testutils
 
 import (
 	"fmt"
-	"io/ioutil"
 	"os"
 	"path"
+	"path/filepath"
 	"sort"
 	"strings"
 	"testing"
 
+	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/kops/pkg/apis/kops"
 	"k8s.io/kops/pkg/apis/kops/v1alpha2"
-	"k8s.io/kops/pkg/diff"
+	"k8s.io/kops/pkg/assets"
 	"k8s.io/kops/pkg/kopscodecs"
+	"k8s.io/kops/pkg/testutils/golden"
 	"k8s.io/kops/upup/pkg/fi"
 	"k8s.io/kops/util/pkg/text"
 )
@@ -37,12 +39,15 @@ import (
 type Model struct {
 	Cluster        *kops.Cluster
 	InstanceGroups []*kops.InstanceGroup
+
+	// AdditionalObjects holds cluster-asssociated configuration objects, other than the Cluster and InstanceGroups.
+	AdditionalObjects []*unstructured.Unstructured
 }
 
 // LoadModel loads a cluster and instancegroups from a cluster.yaml file found in basedir
 func LoadModel(basedir string) (*Model, error) {
 	clusterYamlPath := path.Join(basedir, "cluster.yaml")
-	clusterYaml, err := ioutil.ReadFile(clusterYamlPath)
+	clusterYaml, err := os.ReadFile(clusterYamlPath)
 	if err != nil {
 		return nil, fmt.Errorf("error reading file %q: %v", clusterYamlPath, err)
 	}
@@ -69,15 +74,18 @@ func LoadModel(basedir string) (*Model, error) {
 		case *kops.InstanceGroup:
 			spec.InstanceGroups = append(spec.InstanceGroups, v)
 
+		case *unstructured.Unstructured:
+			spec.AdditionalObjects = append(spec.AdditionalObjects, v)
+
 		default:
-			return nil, fmt.Errorf("Unhandled kind %q", gvk)
+			return nil, fmt.Errorf("unhandled kind %T %q", o, gvk)
 		}
 	}
 
 	return spec, nil
 }
 
-func ValidateTasks(t *testing.T, basedir string, context *fi.ModelBuilderContext) {
+func ValidateTasks[T fi.SubContext](t *testing.T, expectedFile string, context *fi.ModelBuilderContext[T]) {
 	var keys []string
 	for key := range context.Tasks {
 		keys = append(keys, key)
@@ -95,27 +103,51 @@ func ValidateTasks(t *testing.T, basedir string, context *fi.ModelBuilderContext
 	}
 
 	actualTasksYaml := strings.Join(yamls, "\n---\n")
-
-	tasksYamlPath := path.Join(basedir, "tasks.yaml")
-	expectedTasksYamlBytes, err := ioutil.ReadFile(tasksYamlPath)
-	if err != nil {
-		t.Fatalf("error reading file %q: %v", tasksYamlPath, err)
-	}
-
 	actualTasksYaml = strings.TrimSpace(actualTasksYaml)
-	expectedTasksYaml := strings.TrimSpace(string(expectedTasksYamlBytes))
 
-	if expectedTasksYaml != actualTasksYaml {
-		if os.Getenv("HACK_UPDATE_EXPECTED_IN_PLACE") != "" {
-			t.Logf("HACK_UPDATE_EXPECTED_IN_PLACE: writing expected output %s", tasksYamlPath)
-			if err := ioutil.WriteFile(tasksYamlPath, []byte(actualTasksYaml), 0644); err != nil {
-				t.Errorf("error writing expected output %s: %v", tasksYamlPath, err)
-			}
-		}
+	golden.AssertMatchesFile(t, actualTasksYaml, expectedFile)
 
-		diffString := diff.FormatDiff(expectedTasksYaml, actualTasksYaml)
-		t.Logf("diff:\n%s\n", diffString)
+	// Asserts that FindTaskDependencies doesn't call klog.Fatalf()
+	fi.FindTaskDependencies(context.Tasks)
+}
 
-		t.Fatalf("tasks differed from expected for test %q", basedir)
+// ValidateStaticFiles is used to validate generate StaticFiles.
+func ValidateStaticFiles(t *testing.T, expectedDir string, assetBuilder *assets.AssetBuilder) {
+	files, err := os.ReadDir(expectedDir)
+	if err != nil {
+		t.Fatalf("error reading directory %q: %v", expectedDir, err)
 	}
+
+	prefix := "static-"
+
+	staticFiles := make(map[string]*assets.StaticFile)
+	for _, staticFile := range assetBuilder.StaticFiles {
+		k := filepath.Base(staticFile.Path)
+		staticFiles[k] = staticFile
+		expectedFile := filepath.Join(expectedDir, prefix+k)
+		golden.AssertMatchesFile(t, staticFile.Content, expectedFile)
+	}
+
+	for _, file := range files {
+		name := file.Name()
+		if !strings.HasPrefix(name, prefix) {
+			continue
+		}
+		p := filepath.Join(expectedDir, name)
+		key := strings.TrimPrefix(name, prefix)
+		if _, found := staticFiles[key]; !found {
+			t.Errorf("unexpected file with prefix %q: %q", prefix, p)
+		}
+	}
+}
+
+func ValidateCompletedCluster(t *testing.T, expectedFile string, cluster *kops.Cluster) {
+	b, err := kops.ToRawYaml(cluster)
+	if err != nil {
+		t.Fatalf("error serializing cluster: %v", err)
+	}
+
+	yaml := strings.TrimSpace(string(b))
+
+	golden.AssertMatchesFile(t, yaml, expectedFile)
 }

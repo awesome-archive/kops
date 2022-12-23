@@ -1,5 +1,5 @@
 /*
-Copyright 2016 The Kubernetes Authors.
+Copyright 2019 The Kubernetes Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -21,32 +21,33 @@ import (
 	"strings"
 
 	"github.com/gophercloud/gophercloud/openstack/compute/v2/extensions/keypairs"
-	"k8s.io/klog"
+	"k8s.io/klog/v2"
 
 	"k8s.io/kops/pkg/pki"
 	"k8s.io/kops/upup/pkg/fi"
 	"k8s.io/kops/upup/pkg/fi/cloudup/openstack"
 )
 
-//go:generate fitask -type=SSHKey
+// +kops:fitask
 type SSHKey struct {
 	Name      *string
-	Lifecycle *fi.Lifecycle
+	Lifecycle fi.Lifecycle
 
-	PublicKey *fi.ResourceHolder
+	PublicKey fi.Resource
 
 	KeyFingerprint *string
 }
 
 var _ fi.CompareWithID = &SSHKey{}
+var _ fi.CloudupTaskNormalize = &SSHKey{}
 
 func (e *SSHKey) CompareWithID() *string {
 	return e.Name
 }
 
-func (e *SSHKey) Find(c *fi.Context) (*SSHKey, error) {
-	cloud := c.Cloud.(openstack.OpenstackCloud)
-	rs, err := cloud.GetKeypair(openstackKeyPairName(fi.StringValue(e.Name)))
+func (e *SSHKey) Find(c *fi.CloudupContext) (*SSHKey, error) {
+	cloud := c.T.Cloud.(openstack.OpenstackCloud)
+	rs, err := cloud.GetKeypair(openstackKeyPairName(fi.ValueOf(e.Name)))
 	if err != nil {
 		return nil, err
 	}
@@ -55,23 +56,23 @@ func (e *SSHKey) Find(c *fi.Context) (*SSHKey, error) {
 	}
 	actual := &SSHKey{
 		Name:           e.Name,
-		KeyFingerprint: fi.String(rs.Fingerprint),
+		KeyFingerprint: fi.PtrTo(rs.Fingerprint),
 	}
 
 	// Avoid spurious changes
-	if fi.StringValue(actual.KeyFingerprint) == fi.StringValue(e.KeyFingerprint) {
+	if fi.ValueOf(actual.KeyFingerprint) == fi.ValueOf(e.KeyFingerprint) {
 		klog.V(2).Infof("SSH key fingerprints match; assuming public keys match")
 		actual.PublicKey = e.PublicKey
 	} else {
-		klog.V(2).Infof("Computed SSH key fingerprint mismatch: %q %q", fi.StringValue(e.KeyFingerprint), fi.StringValue(actual.KeyFingerprint))
+		klog.V(2).Infof("Computed SSH key fingerprint mismatch: %q %q", fi.ValueOf(e.KeyFingerprint), fi.ValueOf(actual.KeyFingerprint))
 	}
 	actual.Lifecycle = e.Lifecycle
 	return actual, nil
 }
 
-func (e *SSHKey) Run(c *fi.Context) error {
+func (e *SSHKey) Normalize(c *fi.CloudupContext) error {
 	if e.KeyFingerprint == nil && e.PublicKey != nil {
-		publicKey, err := e.PublicKey.AsString()
+		publicKey, err := fi.ResourceAsString(e.PublicKey)
 		if err != nil {
 			return fmt.Errorf("error reading SSH public key: %v", err)
 		}
@@ -83,7 +84,11 @@ func (e *SSHKey) Run(c *fi.Context) error {
 		klog.V(2).Infof("Computed SSH key fingerprint as %q", keyFingerprint)
 		e.KeyFingerprint = &keyFingerprint
 	}
-	return fi.DefaultDeltaRunMethod(e, c)
+	return nil
+}
+
+func (e *SSHKey) Run(c *fi.CloudupContext) error {
+	return fi.CloudupDefaultDeltaRunMethod(e, c)
 }
 
 func (s *SSHKey) CheckChanges(a, e, changes *SSHKey) error {
@@ -110,14 +115,14 @@ func openstackKeyPairName(org string) string {
 
 func (_ *SSHKey) RenderOpenstack(t *openstack.OpenstackAPITarget, a, e, changes *SSHKey) error {
 	if a == nil {
-		klog.V(2).Infof("Creating Keypair with name:%q", fi.StringValue(e.Name))
+		klog.V(2).Infof("Creating Keypair with name:%q", fi.ValueOf(e.Name))
 
 		opt := keypairs.CreateOpts{
-			Name: openstackKeyPairName(fi.StringValue(e.Name)),
+			Name: openstackKeyPairName(fi.ValueOf(e.Name)),
 		}
 
 		if e.PublicKey != nil {
-			d, err := e.PublicKey.AsString()
+			d, err := fi.ResourceAsString(e.PublicKey)
 			if err != nil {
 				return fmt.Errorf("error rendering SSHKey PublicKey: %v", err)
 			}
@@ -129,11 +134,11 @@ func (_ *SSHKey) RenderOpenstack(t *openstack.OpenstackAPITarget, a, e, changes 
 			return fmt.Errorf("Error creating keypair: %v", err)
 		}
 
-		e.KeyFingerprint = fi.String(v.Fingerprint)
+		e.KeyFingerprint = fi.PtrTo(v.Fingerprint)
 		klog.V(2).Infof("Creating a new Openstack keypair, id=%s", v.Fingerprint)
 		return nil
 	}
 	e.KeyFingerprint = a.KeyFingerprint
-	klog.V(2).Infof("Using an existing Openstack keypair, id=%s", fi.StringValue(e.KeyFingerprint))
+	klog.V(2).Infof("Using an existing Openstack keypair, id=%s", fi.ValueOf(e.KeyFingerprint))
 	return nil
 }

@@ -1,5 +1,5 @@
 /*
-Copyright 2016 The Kubernetes Authors.
+Copyright 2019 The Kubernetes Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -17,6 +17,7 @@ limitations under the License.
 package awstasks
 
 import (
+	"context"
 	"reflect"
 	"testing"
 
@@ -60,59 +61,63 @@ func testParsesAsPort(t *testing.T, rule string, port int) {
 
 func TestPortRemovalRule(t *testing.T) {
 	r := &PortRemovalRule{Port: 22}
-	testMatches(t, r, &ec2.IpPermission{FromPort: aws.Int64(22), ToPort: aws.Int64(22)})
+	testMatches(t, r, &ec2.SecurityGroupRule{FromPort: aws.Int64(22), ToPort: aws.Int64(22)})
 
-	testNotMatches(t, r, &ec2.IpPermission{FromPort: aws.Int64(0), ToPort: aws.Int64(0)})
-	testNotMatches(t, r, &ec2.IpPermission{FromPort: aws.Int64(23), ToPort: aws.Int64(23)})
-	testNotMatches(t, r, &ec2.IpPermission{FromPort: aws.Int64(20), ToPort: aws.Int64(22)})
-	testNotMatches(t, r, &ec2.IpPermission{FromPort: aws.Int64(22), ToPort: aws.Int64(23)})
-	testNotMatches(t, r, &ec2.IpPermission{ToPort: aws.Int64(22)})
-	testNotMatches(t, r, &ec2.IpPermission{FromPort: aws.Int64(22)})
-	testNotMatches(t, r, &ec2.IpPermission{})
+	testNotMatches(t, r, &ec2.SecurityGroupRule{FromPort: aws.Int64(0), ToPort: aws.Int64(0)})
+	testNotMatches(t, r, &ec2.SecurityGroupRule{FromPort: aws.Int64(23), ToPort: aws.Int64(23)})
+	testNotMatches(t, r, &ec2.SecurityGroupRule{FromPort: aws.Int64(20), ToPort: aws.Int64(22)})
+	testNotMatches(t, r, &ec2.SecurityGroupRule{FromPort: aws.Int64(22), ToPort: aws.Int64(23)})
+	testNotMatches(t, r, &ec2.SecurityGroupRule{ToPort: aws.Int64(22)})
+	testNotMatches(t, r, &ec2.SecurityGroupRule{FromPort: aws.Int64(22)})
+	testNotMatches(t, r, &ec2.SecurityGroupRule{})
 }
 
 func TestPortRemovalRule_Zero(t *testing.T) {
 	r := &PortRemovalRule{Port: 0}
-	testMatches(t, r, &ec2.IpPermission{FromPort: aws.Int64(0), ToPort: aws.Int64(0)})
+	testMatches(t, r, &ec2.SecurityGroupRule{FromPort: aws.Int64(0), ToPort: aws.Int64(0)})
 
-	testNotMatches(t, r, &ec2.IpPermission{FromPort: aws.Int64(0), ToPort: aws.Int64(20)})
-	testNotMatches(t, r, &ec2.IpPermission{ToPort: aws.Int64(0)})
-	testNotMatches(t, r, &ec2.IpPermission{FromPort: aws.Int64(0)})
-	testNotMatches(t, r, &ec2.IpPermission{})
+	testNotMatches(t, r, &ec2.SecurityGroupRule{FromPort: aws.Int64(0), ToPort: aws.Int64(20)})
+	testNotMatches(t, r, &ec2.SecurityGroupRule{ToPort: aws.Int64(0)})
+	testNotMatches(t, r, &ec2.SecurityGroupRule{FromPort: aws.Int64(0)})
+	testNotMatches(t, r, &ec2.SecurityGroupRule{})
 }
 
-func testMatches(t *testing.T, rule *PortRemovalRule, permission *ec2.IpPermission) {
+func testMatches(t *testing.T, rule *PortRemovalRule, permission *ec2.SecurityGroupRule) {
 	if !rule.Matches(permission) {
 		t.Fatalf("rule %q failed to match permission %q", rule, permission)
 	}
 }
 
-func testNotMatches(t *testing.T, rule *PortRemovalRule, permission *ec2.IpPermission) {
+func testNotMatches(t *testing.T, rule *PortRemovalRule, permission *ec2.SecurityGroupRule) {
 	if rule.Matches(permission) {
 		t.Fatalf("rule %q unexpectedly matched permission %q", rule, permission)
 	}
 }
 
 func TestSecurityGroupCreate(t *testing.T) {
+	ctx := context.TODO()
+
 	cloud := awsup.BuildMockAWSCloud("us-east-1", "abc")
 	c := &mockec2.MockEC2{}
 	cloud.MockEC2 = c
 
 	// We define a function so we can rebuild the tasks, because we modify in-place when running
-	buildTasks := func() map[string]fi.Task {
+	buildTasks := func() map[string]fi.CloudupTask {
 		vpc1 := &VPC{
-			Name: s("vpc1"),
-			CIDR: s("172.20.0.0/16"),
-			Tags: map[string]string{"Name": "vpc1"},
+			Name:      s("vpc1"),
+			Lifecycle: fi.LifecycleSync,
+			CIDR:      s("172.20.0.0/16"),
+			Tags:      map[string]string{"Name": "vpc1"},
 		}
 		sg1 := &SecurityGroup{
 			Name:        s("sg1"),
+			Lifecycle:   fi.LifecycleSync,
 			Description: s("Description"),
 			VPC:         vpc1,
 			Tags:        map[string]string{"Name": "sg1"},
 		}
 
-		return map[string]fi.Task{
+		return map[string]fi.CloudupTask{
 			"sg1":  sg1,
 			"vpc1": vpc1,
 		}
@@ -127,7 +132,7 @@ func TestSecurityGroupCreate(t *testing.T) {
 			Cloud: cloud,
 		}
 
-		context, err := fi.NewContext(target, nil, cloud, nil, nil, nil, true, allTasks)
+		context, err := fi.NewCloudupContext(ctx, target, nil, cloud, nil, nil, nil, allTasks)
 		if err != nil {
 			t.Fatalf("error building context: %v", err)
 		}
@@ -136,7 +141,7 @@ func TestSecurityGroupCreate(t *testing.T) {
 			t.Fatalf("unexpected error during Run: %v", err)
 		}
 
-		if fi.StringValue(sg1.ID) == "" {
+		if fi.ValueOf(sg1.ID) == "" {
 			t.Fatalf("ID not set after create")
 		}
 
@@ -148,7 +153,13 @@ func TestSecurityGroupCreate(t *testing.T) {
 			Description: s("Description"),
 			GroupId:     sg1.ID,
 			VpcId:       vpc1.ID,
-			GroupName:   s("sg1"),
+			Tags: []*ec2.Tag{
+				{
+					Key:   aws.String("Name"),
+					Value: aws.String("sg1"),
+				},
+			},
+			GroupName: s("sg1"),
 		}
 		actual := c.SecurityGroups[*sg1.ID]
 		if !reflect.DeepEqual(actual, expected) {
@@ -158,6 +169,6 @@ func TestSecurityGroupCreate(t *testing.T) {
 
 	{
 		allTasks := buildTasks()
-		checkNoChanges(t, cloud, allTasks)
+		checkNoChanges(t, ctx, cloud, allTasks)
 	}
 }

@@ -1,5 +1,5 @@
 /*
-Copyright 2016 The Kubernetes Authors.
+Copyright 2019 The Kubernetes Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -18,7 +18,7 @@ package main
 
 import (
 	"bytes"
-	"io/ioutil"
+	"context"
 	"os"
 	"path"
 	"strings"
@@ -27,16 +27,17 @@ import (
 
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/ec2"
-	"k8s.io/klog"
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime/schema"
+
 	"k8s.io/kops/cloudmock/aws/mockec2"
 	"k8s.io/kops/cmd/kops/util"
 	"k8s.io/kops/pkg/apis/kops"
-	"k8s.io/kops/pkg/diff"
+	"k8s.io/kops/pkg/featureflag"
 	"k8s.io/kops/pkg/kopscodecs"
 	"k8s.io/kops/pkg/testutils"
+	"k8s.io/kops/pkg/testutils/golden"
 	"k8s.io/kops/upup/pkg/fi"
 	"k8s.io/kops/upup/pkg/fi/cloudup/awsup"
 )
@@ -45,13 +46,47 @@ var MagicTimestamp = metav1.Time{Time: time.Date(2017, 1, 1, 0, 0, 0, 0, time.UT
 
 // TestCreateClusterMinimal runs kops create cluster minimal.example.com --zones us-test-1a
 func TestCreateClusterMinimal(t *testing.T) {
-	runCreateClusterIntegrationTest(t, "../../tests/integration/create_cluster/minimal", "v1alpha1")
-	runCreateClusterIntegrationTest(t, "../../tests/integration/create_cluster/minimal", "v1alpha2")
+	runCreateClusterIntegrationTest(t, "../../tests/integration/create_cluster/minimal-1.20", "v1alpha2")
+	runCreateClusterIntegrationTest(t, "../../tests/integration/create_cluster/minimal-1.21", "v1alpha2")
+	runCreateClusterIntegrationTest(t, "../../tests/integration/create_cluster/minimal-1.22", "v1alpha2")
+	runCreateClusterIntegrationTest(t, "../../tests/integration/create_cluster/minimal-1.23", "v1alpha2")
+	runCreateClusterIntegrationTest(t, "../../tests/integration/create_cluster/minimal-1.24", "v1alpha2")
+	runCreateClusterIntegrationTest(t, "../../tests/integration/create_cluster/minimal-1.25", "v1alpha2")
+	runCreateClusterIntegrationTest(t, "../../tests/integration/create_cluster/minimal-1.26", "v1alpha2")
+	runCreateClusterIntegrationTest(t, "../../tests/integration/create_cluster/minimal-1.26-arm64", "v1alpha2")
+	runCreateClusterIntegrationTest(t, "../../tests/integration/create_cluster/minimal-1.26-irsa", "v1alpha2")
+}
+
+// TestCreateClusterHetzner runs kops create cluster minimal.k8s.local --zones fsn1
+func TestCreateClusterHetzner(t *testing.T) {
+	t.Setenv("HCLOUD_TOKEN", "REDACTED")
+	runCreateClusterIntegrationTest(t, "../../tests/integration/create_cluster/ha_hetzner", "v1alpha2")
+	runCreateClusterIntegrationTest(t, "../../tests/integration/create_cluster/minimal_hetzner", "v1alpha2")
+}
+
+func TestCreateClusterOpenStack(t *testing.T) {
+	t.Setenv("OS_REGION_NAME", "us-test1")
+	runCreateClusterIntegrationTest(t, "../../tests/integration/create_cluster/ha_openstack", "v1alpha2")
+}
+
+func TestCreateClusterOpenStackOctavia(t *testing.T) {
+	t.Setenv("OS_REGION_NAME", "us-test1")
+	runCreateClusterIntegrationTest(t, "../../tests/integration/create_cluster/ha_openstack_octavia", "v1alpha2")
+}
+
+// TestCreateClusterCilium runs kops with the cilium networking flags
+func TestCreateClusterCilium(t *testing.T) {
+	runCreateClusterIntegrationTest(t, "../../tests/integration/create_cluster/cilium-eni", "v1alpha2")
 }
 
 // TestCreateClusterOverride tests the override flag
 func TestCreateClusterOverride(t *testing.T) {
 	runCreateClusterIntegrationTest(t, "../../tests/integration/create_cluster/overrides", "v1alpha2")
+}
+
+// TestCreateClusterKubernetesFeatureGates tests the override flag
+func TestCreateClusterKubernetesFeatureGates(t *testing.T) {
+	runCreateClusterIntegrationTest(t, "../../tests/integration/create_cluster/minimal_feature-gates", "v1alpha2")
 }
 
 // TestCreateClusterComplex runs kops create cluster, with a grab-bag of edge cases
@@ -61,10 +96,14 @@ func TestCreateClusterComplex(t *testing.T) {
 
 // TestCreateClusterHA runs kops create cluster ha.example.com --zones us-test-1a,us-test-1b,us-test-1c --master-zones us-test-1a,us-test-1b,us-test-1c
 func TestCreateClusterHA(t *testing.T) {
-	runCreateClusterIntegrationTest(t, "../../tests/integration/create_cluster/ha", "v1alpha1")
 	runCreateClusterIntegrationTest(t, "../../tests/integration/create_cluster/ha", "v1alpha2")
-	runCreateClusterIntegrationTest(t, "../../tests/integration/create_cluster/ha_encrypt", "v1alpha1")
 	runCreateClusterIntegrationTest(t, "../../tests/integration/create_cluster/ha_encrypt", "v1alpha2")
+}
+
+// TestCreateClusterMinimalGCE runs kops create cluster minimal.example.com --cloud gce --zones us-test1-a
+func TestCreateClusterMinimalGCE(t *testing.T) {
+	runCreateClusterIntegrationTest(t, "../../tests/integration/create_cluster/minimal-1.26-gce", "v1alpha2")
+	runCreateClusterIntegrationTest(t, "../../tests/integration/create_cluster/minimal-1.26-gce-dns-none", "v1alpha2")
 }
 
 // TestCreateClusterHAGCE runs kops create cluster ha-gce.example.com --cloud gce --zones us-test1-a,us-test1-b,us-test1-c --master-zones us-test1-a,us-test1-b,us-test1-c
@@ -72,55 +111,89 @@ func TestCreateClusterHAGCE(t *testing.T) {
 	runCreateClusterIntegrationTest(t, "../../tests/integration/create_cluster/ha_gce", "v1alpha2")
 }
 
+// TestCreateClusterGCE runs kops create cluster gce.example.com --cloud gce --zones us-test1-a --gce-service-account=test-account@testproject.iam.gserviceaccounts.com
+func TestCreateClusterGCE(t *testing.T) {
+	runCreateClusterIntegrationTest(t, "../../tests/integration/create_cluster/gce_byo_sa", "v1alpha2")
+}
+
+// TestCreateClusterHASharedZone tests kops create cluster when the master count is bigger than the number of zones
+func TestCreateClusterHASharedZone(t *testing.T) {
+	runCreateClusterIntegrationTest(t, "../../tests/integration/create_cluster/ha_shared_zone", "v1alpha2")
+}
+
 // TestCreateClusterHASharedZones tests kops create cluster when the master count is bigger than the number of zones
 func TestCreateClusterHASharedZones(t *testing.T) {
-	// Cannot be expressed in v1alpha1 API:	runCreateClusterIntegrationTest(t, "../../tests/integration/create_cluster/ha_shared_zones", "v1alpha1")
 	runCreateClusterIntegrationTest(t, "../../tests/integration/create_cluster/ha_shared_zones", "v1alpha2")
 }
 
 // TestCreateClusterPrivate runs kops create cluster private.example.com --zones us-test-1a --master-zones us-test-1a
 func TestCreateClusterPrivate(t *testing.T) {
-	runCreateClusterIntegrationTest(t, "../../tests/integration/create_cluster/private", "v1alpha1")
 	runCreateClusterIntegrationTest(t, "../../tests/integration/create_cluster/private", "v1alpha2")
+}
+
+// TestCreateClusterPrivateGCE runs kops create cluster private.example.com --cloud gce --zones us-test1-a --master-zones us-test-1a --topology private --bastion
+func TestCreateClusterPrivateGCE(t *testing.T) {
+	runCreateClusterIntegrationTest(t, "../../tests/integration/create_cluster/private_gce", "v1alpha2")
 }
 
 // TestCreateClusterWithNGWSpecified runs kops create cluster private.example.com --zones us-test-1a --master-zones us-test-1a
 func TestCreateClusterWithNGWSpecified(t *testing.T) {
-	runCreateClusterIntegrationTest(t, "../../tests/integration/create_cluster/ngwspecified", "v1alpha1")
 	runCreateClusterIntegrationTest(t, "../../tests/integration/create_cluster/ngwspecified", "v1alpha2")
 }
 
 // TestCreateClusterWithINGWSpecified runs kops create cluster private.example.com --zones us-test-1a --master-zones us-test-1a
 func TestCreateClusterWithINGWSpecified(t *testing.T) {
-	runCreateClusterIntegrationTest(t, "../../tests/integration/create_cluster/ingwspecified", "v1alpha1")
 	runCreateClusterIntegrationTest(t, "../../tests/integration/create_cluster/ingwspecified", "v1alpha2")
 }
 
 // TestCreateClusterSharedVPC runs kops create cluster vpc.example.com --zones us-test-1a --master-zones us-test-1a --vpc vpc-12345678
 func TestCreateClusterSharedVPC(t *testing.T) {
-	runCreateClusterIntegrationTest(t, "../../tests/integration/create_cluster/shared_vpc", "v1alpha1")
 	runCreateClusterIntegrationTest(t, "../../tests/integration/create_cluster/shared_vpc", "v1alpha2")
 }
 
 // TestCreateClusterSharedSubnets runs kops create cluster subnet.example.com --zones us-test-1a --master-zones us-test-1a --vpc vpc-12345678 --subnets subnet-1
 func TestCreateClusterSharedSubnets(t *testing.T) {
-	runCreateClusterIntegrationTest(t, "../../tests/integration/create_cluster/shared_subnets", "v1alpha1")
 	runCreateClusterIntegrationTest(t, "../../tests/integration/create_cluster/shared_subnets", "v1alpha2")
 }
 
 // TestCreateClusterSharedSubnetsVpcLookup runs kops create cluster subnet.example.com --zones us-test-1a --master-zones us-test-1a --vpc --subnets subnet-1
 func TestCreateClusterSharedSubnetsVpcLookup(t *testing.T) {
-	runCreateClusterIntegrationTest(t, "../../tests/integration/create_cluster/shared_subnets_vpc_lookup", "v1alpha1")
 	runCreateClusterIntegrationTest(t, "../../tests/integration/create_cluster/shared_subnets_vpc_lookup", "v1alpha2")
 }
 
 // TestCreateClusterPrivateSharedSubnets runs kops create cluster private-subnet.example.com --zones us-test-1a --master-zones us-test-1a --vpc vpc-12345678 --subnets subnet-1 --utility-subnets subnet-2
 func TestCreateClusterPrivateSharedSubnets(t *testing.T) {
-	// Cannot be expressed in v1alpha1 API: runCreateClusterIntegrationTest(t, "../../tests/integration/create_cluster/private_shared_subnets", "v1alpha1")
 	runCreateClusterIntegrationTest(t, "../../tests/integration/create_cluster/private_shared_subnets", "v1alpha2")
 }
 
+// TestCreateClusterIPv6 runs kops create cluster --zones us-test-1a --master-zones us-test-1a --ipv6
+func TestCreateClusterIPv6(t *testing.T) {
+	runCreateClusterIntegrationTest(t, "../../tests/integration/create_cluster/ipv6", "v1alpha2")
+}
+
+// TestCreateClusterDifferentAMIs runs kops create cluster with different AMI inputs
+func TestCreateClusterDifferentAMIs(t *testing.T) {
+	featureflag.ParseFlags("+APIServerNodes")
+	unsetFeatureFlags := func() {
+		featureflag.ParseFlags("-APIServerNodes")
+	}
+	defer unsetFeatureFlags()
+	runCreateClusterIntegrationTest(t, "../../tests/integration/create_cluster/different-amis", "v1alpha2")
+}
+
+// TestCreateClusterKarpenter runs kops create cluster --instance-manager=karpenter
+func TestCreateClusterKarpenter(t *testing.T) {
+	featureflag.ParseFlags("+Karpenter")
+	unsetFeatureFlags := func() {
+		featureflag.ParseFlags("-Karpenter")
+	}
+	defer unsetFeatureFlags()
+	runCreateClusterIntegrationTest(t, "../../tests/integration/create_cluster/karpenter", "v1alpha2")
+}
+
 func runCreateClusterIntegrationTest(t *testing.T, srcDir string, version string) {
+	ctx := context.Background()
+
 	var stdout bytes.Buffer
 
 	optionsYAML := "options.yaml"
@@ -134,6 +207,7 @@ func runCreateClusterIntegrationTest(t *testing.T, srcDir string, version string
 
 	h.SetupMockAWS()
 	h.SetupMockGCE()
+	testutils.SetupMockOpenstack()
 
 	cloudTags := map[string]string{}
 	awsCloud, _ := awsup.NewAWSCloud("us-test-1", cloudTags)
@@ -164,7 +238,7 @@ func runCreateClusterIntegrationTest(t *testing.T, srcDir string, version string
 	factory := util.NewFactory(factoryOptions)
 
 	{
-		optionsBytes, err := ioutil.ReadFile(path.Join(srcDir, optionsYAML))
+		optionsBytes, err := os.ReadFile(path.Join(srcDir, optionsYAML))
 		if err != nil {
 			t.Fatalf("error reading options file: %v", err)
 		}
@@ -182,7 +256,7 @@ func runCreateClusterIntegrationTest(t *testing.T, srcDir string, version string
 
 		// Use the public key we produced
 		{
-			publicKey, err := ioutil.ReadFile(publicKeyPath)
+			publicKey, err := os.ReadFile(publicKeyPath)
 			if err != nil {
 				t.Fatalf("error reading public key %q: %v", publicKeyPath, err)
 			}
@@ -191,19 +265,19 @@ func runCreateClusterIntegrationTest(t *testing.T, srcDir string, version string
 			options.SSHPublicKeys = sshPublicKeys
 		}
 
-		err = RunCreateCluster(factory, &stdout, options)
+		err = RunCreateCluster(ctx, factory, &stdout, options)
 		if err != nil {
 			t.Fatalf("error running create cluster: %v", err)
 		}
 	}
 
-	clientset, err := factory.Clientset()
+	clientset, err := factory.KopsClient()
 	if err != nil {
 		t.Fatalf("error getting clientset: %v", err)
 	}
 
 	// Compare cluster
-	clusters, err := clientset.ListClusters(metav1.ListOptions{})
+	clusters, err := clientset.ListClusters(ctx, metav1.ListOptions{})
 	if err != nil {
 		t.Fatalf("error listing clusters: %v", err)
 	}
@@ -227,7 +301,7 @@ func runCreateClusterIntegrationTest(t *testing.T, srcDir string, version string
 
 	// Compare instance groups
 
-	instanceGroups, err := clientset.InstanceGroupsFor(&clusters.Items[0]).List(metav1.ListOptions{})
+	instanceGroups, err := clientset.InstanceGroupsFor(&clusters.Items[0]).List(ctx, metav1.ListOptions{})
 	if err != nil {
 		t.Fatalf("error listing instance groups: %v", err)
 	}
@@ -245,37 +319,25 @@ func runCreateClusterIntegrationTest(t *testing.T, srcDir string, version string
 		yamlAll = append(yamlAll, actualYAML)
 	}
 
-	expectedYAMLBytes, err := ioutil.ReadFile(path.Join(srcDir, expectedClusterPath))
+	// Compare additional objects
+	addons, err := clientset.AddonsFor(&clusters.Items[0]).List()
 	if err != nil {
-		t.Fatalf("unexpected error reading expected YAML: %v", err)
+		t.Fatalf("error listing addons: %v", err)
 	}
 
-	//on windows, with git set to autocrlf, the reference files on disk have windows line endings
-	expectedYAML := strings.Replace(strings.TrimSpace(string(expectedYAMLBytes)), "\r\n", "\n", -1)
+	for _, addon := range addons {
+		u := addon.ToUnstructured()
 
-	actualYAML := strings.Join(yamlAll, "\n\n---\n\n")
-	if actualYAML != expectedYAML {
-		p := path.Join(srcDir, expectedClusterPath)
-
-		if os.Getenv("HACK_UPDATE_EXPECTED_IN_PLACE") != "" {
-			t.Logf("HACK_UPDATE_EXPECTED_IN_PLACE: writing expected output %s", p)
-
-			// Format nicely - keep git happy
-			s := actualYAML
-			s = strings.TrimSpace(s)
-			s = s + "\n"
-
-			if err := ioutil.WriteFile(p, []byte(s), 0644); err != nil {
-				t.Errorf("error writing expected output %s: %v", p, err)
-			}
+		actualYAMLBytes, err := kopscodecs.ToVersionedYamlWithVersion(u, schema.GroupVersion{Group: "kops.k8s.io", Version: version})
+		if err != nil {
+			t.Fatalf("unexpected error serializing Addon: %v", err)
 		}
 
-		klog.Infof("Actual YAML:\n%s\n", actualYAML)
+		actualYAML := strings.TrimSpace(string(actualYAMLBytes))
 
-		diffString := diff.FormatDiff(expectedYAML, actualYAML)
-		t.Logf("diff:\n%s\n", diffString)
-
-		t.Errorf("YAML differed from expected (%s)", p)
+		yamlAll = append(yamlAll, actualYAML)
 	}
 
+	actualYAML := strings.Join(yamlAll, "\n\n---\n\n")
+	golden.AssertMatchesFile(t, actualYAML, path.Join(srcDir, expectedClusterPath))
 }

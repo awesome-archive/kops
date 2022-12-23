@@ -1,5 +1,5 @@
 /*
-Copyright 2018 The Kubernetes Authors.
+Copyright 2019 The Kubernetes Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -26,7 +26,10 @@ import (
 
 // buildEphemeralDevices looks up the machine type and discovery any ephemeral device mappings
 func buildEphemeralDevices(cloud awsup.AWSCloud, machineType string) (map[string]*BlockDeviceMapping, error) {
-	mt, err := awsup.GetMachineTypeInfo(machineType)
+	if machineType == "" {
+		return nil, nil
+	}
+	mt, err := awsup.GetMachineTypeInfo(cloud, machineType)
 	if err != nil {
 		return nil, fmt.Errorf("failed to find instance type details on: %s, error: %s", machineType, err)
 	}
@@ -34,7 +37,7 @@ func buildEphemeralDevices(cloud awsup.AWSCloud, machineType string) (map[string
 	blockDeviceMappings := make(map[string]*BlockDeviceMapping)
 
 	for _, ed := range mt.EphemeralDevices() {
-		blockDeviceMappings[ed.DeviceName] = &BlockDeviceMapping{VirtualName: fi.String(ed.VirtualName)}
+		blockDeviceMappings[ed.DeviceName] = &BlockDeviceMapping{VirtualName: fi.PtrTo(ed.VirtualName)}
 	}
 
 	return blockDeviceMappings, nil
@@ -42,7 +45,7 @@ func buildEphemeralDevices(cloud awsup.AWSCloud, machineType string) (map[string
 
 // buildAdditionalDevices is responsible for creating additional volumes in this lc
 func buildAdditionalDevices(volumes []*BlockDeviceMapping) (map[string]*BlockDeviceMapping, error) {
-	devices := make(map[string]*BlockDeviceMapping, 0)
+	devices := make(map[string]*BlockDeviceMapping)
 
 	// @step: iterate the volumes and create devices from them
 	for _, x := range volumes {

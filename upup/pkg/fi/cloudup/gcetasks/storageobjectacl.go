@@ -20,17 +20,17 @@ import (
 	"fmt"
 
 	"google.golang.org/api/storage/v1"
-	"k8s.io/klog"
+	"k8s.io/klog/v2"
 	"k8s.io/kops/upup/pkg/fi"
 	"k8s.io/kops/upup/pkg/fi/cloudup/gce"
 	"k8s.io/kops/upup/pkg/fi/cloudup/terraform"
 )
 
 // StorageObjectAcl represents an ACL rule on a google cloud storage object
-//go:generate fitask -type=StorageObjectAcl
+// +kops:fitask
 type StorageObjectAcl struct {
 	Name      *string
-	Lifecycle *fi.Lifecycle
+	Lifecycle fi.Lifecycle
 
 	Bucket *string
 	Object *string
@@ -45,12 +45,12 @@ func (e *StorageObjectAcl) CompareWithID() *string {
 	return e.Name
 }
 
-func (e *StorageObjectAcl) Find(c *fi.Context) (*StorageObjectAcl, error) {
-	cloud := c.Cloud.(gce.GCECloud)
+func (e *StorageObjectAcl) Find(c *fi.CloudupContext) (*StorageObjectAcl, error) {
+	cloud := c.T.Cloud.(gce.GCECloud)
 
-	bucket := fi.StringValue(e.Bucket)
-	object := fi.StringValue(e.Object)
-	entity := fi.StringValue(e.Entity)
+	bucket := fi.ValueOf(e.Bucket)
+	object := fi.ValueOf(e.Object)
+	entity := fi.ValueOf(e.Entity)
 
 	klog.V(2).Infof("Checking GCS object ACL for gs://%s/%s for %s", bucket, object, entity)
 	r, err := cloud.Storage().ObjectAccessControls.Get(bucket, object, entity).Do()
@@ -75,28 +75,28 @@ func (e *StorageObjectAcl) Find(c *fi.Context) (*StorageObjectAcl, error) {
 	return actual, nil
 }
 
-func (e *StorageObjectAcl) Run(c *fi.Context) error {
-	return fi.DefaultDeltaRunMethod(e, c)
+func (e *StorageObjectAcl) Run(c *fi.CloudupContext) error {
+	return fi.CloudupDefaultDeltaRunMethod(e, c)
 }
 
 func (_ *StorageObjectAcl) CheckChanges(a, e, changes *StorageObjectAcl) error {
-	if fi.StringValue(e.Bucket) == "" {
+	if fi.ValueOf(e.Bucket) == "" {
 		return fi.RequiredField("Bucket")
 	}
-	if fi.StringValue(e.Object) == "" {
+	if fi.ValueOf(e.Object) == "" {
 		return fi.RequiredField("Object")
 	}
-	if fi.StringValue(e.Entity) == "" {
+	if fi.ValueOf(e.Entity) == "" {
 		return fi.RequiredField("Entity")
 	}
 	return nil
 }
 
 func (_ *StorageObjectAcl) RenderGCE(t *gce.GCEAPITarget, a, e, changes *StorageObjectAcl) error {
-	bucket := fi.StringValue(e.Bucket)
-	object := fi.StringValue(e.Object)
-	entity := fi.StringValue(e.Entity)
-	role := fi.StringValue(e.Role)
+	bucket := fi.ValueOf(e.Bucket)
+	object := fi.ValueOf(e.Object)
+	entity := fi.ValueOf(e.Entity)
+	role := fi.ValueOf(e.Role)
 
 	acl := &storage.ObjectAccessControl{
 		Entity: entity,
@@ -124,17 +124,17 @@ func (_ *StorageObjectAcl) RenderGCE(t *gce.GCEAPITarget, a, e, changes *Storage
 
 // terraformStorageObjectAcl is the model for a terraform google_storage_object_acl rule
 type terraformStorageObjectAcl struct {
-	Bucket     string   `json:"bucket,omitempty"`
-	Object     string   `json:"object,omitempty"`
-	RoleEntity []string `json:"role_entity,omitempty"`
+	Bucket     string   `cty:"bucket"`
+	Object     string   `cty:"object"`
+	RoleEntity []string `cty:"role_entity"`
 }
 
 func (_ *StorageObjectAcl) RenderTerraform(t *terraform.TerraformTarget, a, e, changes *StorageObjectAcl) error {
 	var roleEntities []string
-	roleEntities = append(roleEntities, fi.StringValue(e.Role)+":"+fi.StringValue(e.Name))
+	roleEntities = append(roleEntities, fi.ValueOf(e.Role)+":"+fi.ValueOf(e.Name))
 	tf := &terraformStorageObjectAcl{
-		Bucket:     fi.StringValue(e.Bucket),
-		Object:     fi.StringValue(e.Object),
+		Bucket:     fi.ValueOf(e.Bucket),
+		Object:     fi.ValueOf(e.Object),
 		RoleEntity: roleEntities,
 	}
 

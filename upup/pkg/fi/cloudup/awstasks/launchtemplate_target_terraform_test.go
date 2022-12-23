@@ -1,5 +1,5 @@
 /*
-Copyright 2018 The Kubernetes Authors.
+Copyright 2019 The Kubernetes Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -26,145 +26,169 @@ func TestLaunchTemplateTerraformRender(t *testing.T) {
 	cases := []*renderTest{
 		{
 			Resource: &LaunchTemplate{
-				Name:              fi.String("test"),
-				AssociatePublicIP: fi.Bool(true),
+				Name:              fi.PtrTo("test"),
+				AssociatePublicIP: fi.PtrTo(true),
 				IAMInstanceProfile: &IAMInstanceProfile{
-					Name: fi.String("nodes"),
+					Name: fi.PtrTo("nodes"),
 				},
-				ID:                     fi.String("test-11"),
-				InstanceMonitoring:     fi.Bool(true),
-				InstanceType:           fi.String("t2.medium"),
-				SpotPrice:              "0.1",
-				RootVolumeOptimization: fi.Bool(true),
-				RootVolumeIops:         fi.Int64(100),
-				RootVolumeSize:         fi.Int64(64),
+				ID:                           fi.PtrTo("test-11"),
+				InstanceMonitoring:           fi.PtrTo(true),
+				InstanceType:                 fi.PtrTo("t2.medium"),
+				SpotPrice:                    fi.PtrTo("0.1"),
+				SpotDurationInMinutes:        fi.PtrTo(int64(60)),
+				InstanceInterruptionBehavior: fi.PtrTo("hibernate"),
+				RootVolumeOptimization:       fi.PtrTo(true),
+				RootVolumeIops:               fi.PtrTo(int64(100)),
+				RootVolumeSize:               fi.PtrTo(int64(64)),
 				SSHKey: &SSHKey{
-					Name:      fi.String("newkey"),
-					PublicKey: fi.WrapResource(fi.NewStringResource("newkey")),
+					Name:      fi.PtrTo("newkey"),
+					PublicKey: fi.NewStringResource("newkey"),
 				},
 				SecurityGroups: []*SecurityGroup{
-					{Name: fi.String("nodes-1"), ID: fi.String("1111")},
-					{Name: fi.String("nodes-2"), ID: fi.String("2222")},
+					{Name: fi.PtrTo("nodes-1"), ID: fi.PtrTo("1111")},
+					{Name: fi.PtrTo("nodes-2"), ID: fi.PtrTo("2222")},
 				},
-				Tenancy: fi.String("dedicated"),
+				Tenancy:                 fi.PtrTo("dedicated"),
+				HTTPTokens:              fi.PtrTo("optional"),
+				HTTPPutResponseHopLimit: fi.PtrTo(int64(1)),
 			},
 			Expected: `provider "aws" {
   region = "eu-west-2"
 }
 
 resource "aws_launch_template" "test" {
-  name_prefix = "test-"
-
-  lifecycle = {
-    create_before_destroy = true
-  }
-
   ebs_optimized = true
-
-  iam_instance_profile = {
-    name = "${aws_iam_instance_profile.nodes.id}"
+  iam_instance_profile {
+    name = aws_iam_instance_profile.nodes.id
   }
-
-  instance_type = "t2.medium"
-  key_name      = "${aws_key_pair.newkey.id}"
-
-  instance_market_options = {
+  instance_market_options {
     market_type = "spot"
-
-    spot_options = {
-      max_price = "0.1"
+    spot_options {
+      block_duration_minutes         = 60
+      instance_interruption_behavior = "hibernate"
+      max_price                      = "0.1"
     }
   }
-
-  network_interfaces = {
-    associate_public_ip_address = true
-    security_groups             = ["${aws_security_group.nodes-1.id}", "${aws_security_group.nodes-2.id}"]
+  instance_type = "t2.medium"
+  key_name      = aws_key_pair.newkey.id
+  lifecycle {
+    create_before_destroy = true
   }
-
-  placement = {
+  metadata_options {
+    http_endpoint               = "enabled"
+    http_put_response_hop_limit = 1
+    http_tokens                 = "optional"
+  }
+  monitoring {
+    enabled = true
+  }
+  name = "test"
+  network_interfaces {
+    associate_public_ip_address = true
+    delete_on_termination       = true
+    security_groups             = [aws_security_group.nodes-1.id, aws_security_group.nodes-2.id]
+  }
+  placement {
     tenancy = "dedicated"
   }
 }
 
-terraform = {
-  required_version = ">= 0.9.3"
+terraform {
+  required_version = ">= 0.15.0"
+  required_providers {
+    aws = {
+      "configuration_aliases" = [aws.files]
+      "source"                = "hashicorp/aws"
+      "version"               = ">= 4.0.0"
+    }
+  }
 }
 `,
 		},
 		{
 			Resource: &LaunchTemplate{
-				Name:              fi.String("test"),
-				AssociatePublicIP: fi.Bool(true),
+				Name:              fi.PtrTo("test"),
+				AssociatePublicIP: fi.PtrTo(true),
 				IAMInstanceProfile: &IAMInstanceProfile{
-					Name: fi.String("nodes"),
+					Name: fi.PtrTo("nodes"),
 				},
 				BlockDeviceMappings: []*BlockDeviceMapping{
 					{
-						DeviceName:             fi.String("/dev/xvdd"),
-						EbsVolumeType:          fi.String("gp2"),
-						EbsVolumeSize:          fi.Int64(100),
-						EbsDeleteOnTermination: fi.Bool(true),
-						EbsEncrypted:           fi.Bool(true),
+						DeviceName:             fi.PtrTo("/dev/xvdd"),
+						EbsVolumeType:          fi.PtrTo("gp2"),
+						EbsVolumeSize:          fi.PtrTo(int64(100)),
+						EbsDeleteOnTermination: fi.PtrTo(true),
+						EbsEncrypted:           fi.PtrTo(true),
 					},
 				},
-				ID:                     fi.String("test-11"),
-				InstanceMonitoring:     fi.Bool(true),
-				InstanceType:           fi.String("t2.medium"),
-				RootVolumeOptimization: fi.Bool(true),
-				RootVolumeIops:         fi.Int64(100),
-				RootVolumeSize:         fi.Int64(64),
+				ID:                     fi.PtrTo("test-11"),
+				InstanceMonitoring:     fi.PtrTo(true),
+				InstanceType:           fi.PtrTo("t2.medium"),
+				RootVolumeOptimization: fi.PtrTo(true),
+				RootVolumeIops:         fi.PtrTo(int64(100)),
+				RootVolumeSize:         fi.PtrTo(int64(64)),
 				SSHKey: &SSHKey{
-					Name: fi.String("mykey"),
+					Name: fi.PtrTo("mykey"),
 				},
 				SecurityGroups: []*SecurityGroup{
-					{Name: fi.String("nodes-1"), ID: fi.String("1111")},
-					{Name: fi.String("nodes-2"), ID: fi.String("2222")},
+					{Name: fi.PtrTo("nodes-1"), ID: fi.PtrTo("1111")},
+					{Name: fi.PtrTo("nodes-2"), ID: fi.PtrTo("2222")},
 				},
-				Tenancy: fi.String("dedicated"),
+				Tenancy:                 fi.PtrTo("dedicated"),
+				HTTPTokens:              fi.PtrTo("required"),
+				HTTPPutResponseHopLimit: fi.PtrTo(int64(5)),
 			},
 			Expected: `provider "aws" {
   region = "eu-west-2"
 }
 
 resource "aws_launch_template" "test" {
-  name_prefix = "test-"
-
-  lifecycle = {
-    create_before_destroy = true
-  }
-
-  block_device_mappings = {
+  block_device_mappings {
     device_name = "/dev/xvdd"
-
-    ebs = {
-      volume_type           = "gp2"
-      volume_size           = 100
+    ebs {
       delete_on_termination = true
       encrypted             = true
+      volume_size           = 100
+      volume_type           = "gp2"
     }
   }
-
   ebs_optimized = true
-
-  iam_instance_profile = {
-    name = "${aws_iam_instance_profile.nodes.id}"
+  iam_instance_profile {
+    name = aws_iam_instance_profile.nodes.id
   }
-
   instance_type = "t2.medium"
   key_name      = "mykey"
-
-  network_interfaces = {
-    associate_public_ip_address = true
-    security_groups             = ["${aws_security_group.nodes-1.id}", "${aws_security_group.nodes-2.id}"]
+  lifecycle {
+    create_before_destroy = true
   }
-
-  placement = {
+  metadata_options {
+    http_endpoint               = "enabled"
+    http_put_response_hop_limit = 5
+    http_tokens                 = "required"
+  }
+  monitoring {
+    enabled = true
+  }
+  name = "test"
+  network_interfaces {
+    associate_public_ip_address = true
+    delete_on_termination       = true
+    security_groups             = [aws_security_group.nodes-1.id, aws_security_group.nodes-2.id]
+  }
+  placement {
     tenancy = "dedicated"
   }
 }
 
-terraform = {
-  required_version = ">= 0.9.3"
+terraform {
+  required_version = ">= 0.15.0"
+  required_providers {
+    aws = {
+      "configuration_aliases" = [aws.files]
+      "source"                = "hashicorp/aws"
+      "version"               = ">= 4.0.0"
+    }
+  }
 }
 `,
 		},

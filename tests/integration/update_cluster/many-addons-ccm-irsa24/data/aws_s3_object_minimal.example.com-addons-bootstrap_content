@@ -1,0 +1,203 @@
+kind: Addons
+metadata:
+  creationTimestamp: null
+  name: bootstrap
+spec:
+  addons:
+  - id: k8s-1.16
+    manifest: kops-controller.addons.k8s.io/k8s-1.16.yaml
+    manifestHash: 9937f2398c93b330089caf24723b83b29bf1a9c07030122409bfff53ecc482dc
+    name: kops-controller.addons.k8s.io
+    needsRollingUpdate: control-plane
+    selector:
+      k8s-addon: kops-controller.addons.k8s.io
+    version: 9.99.0
+  - id: k8s-1.12
+    manifest: coredns.addons.k8s.io/k8s-1.12.yaml
+    manifestHash: 285eafc6fde8bfaec8a9fbec97dd539083e453cffd1da4c81b172231b848c667
+    name: coredns.addons.k8s.io
+    selector:
+      k8s-addon: coredns.addons.k8s.io
+    version: 9.99.0
+  - id: k8s-1.9
+    manifest: kubelet-api.rbac.addons.k8s.io/k8s-1.9.yaml
+    manifestHash: 01c120e887bd98d82ef57983ad58a0b22bc85efb48108092a24c4b82e4c9ea81
+    name: kubelet-api.rbac.addons.k8s.io
+    selector:
+      k8s-addon: kubelet-api.rbac.addons.k8s.io
+    version: 9.99.0
+  - id: k8s-1.23
+    manifest: leader-migration.rbac.addons.k8s.io/k8s-1.23.yaml
+    manifestHash: b9c91e09c0f28c9b74ff140b8395d611834c627d698846d625c10975a74a48c4
+    name: leader-migration.rbac.addons.k8s.io
+    selector:
+      k8s-addon: leader-migration.rbac.addons.k8s.io
+    version: 9.99.0
+  - manifest: limit-range.addons.k8s.io/v1.5.0.yaml
+    manifestHash: 2d55c3bc5e354e84a3730a65b42f39aba630a59dc8d32b30859fcce3d3178bc2
+    name: limit-range.addons.k8s.io
+    selector:
+      k8s-addon: limit-range.addons.k8s.io
+    version: 9.99.0
+  - id: k8s-1.12
+    manifest: dns-controller.addons.k8s.io/k8s-1.12.yaml
+    manifestHash: a8a7968b759df7deaa7bb2ef38a9f1011d79c96c6eee64ccca1ac5cf5acc3704
+    name: dns-controller.addons.k8s.io
+    selector:
+      k8s-addon: dns-controller.addons.k8s.io
+    version: 9.99.0
+  - id: k8s-1.15
+    manifest: cluster-autoscaler.addons.k8s.io/k8s-1.15.yaml
+    manifestHash: dd347939c0818fa95b0c56f78135668466b66e14d0d73c58cde3d14a7c13feec
+    name: cluster-autoscaler.addons.k8s.io
+    selector:
+      k8s-addon: cluster-autoscaler.addons.k8s.io
+    version: 9.99.0
+  - id: k8s-1.11
+    manifest: metrics-server.addons.k8s.io/k8s-1.11.yaml
+    manifestHash: d6501f6f54c0481b0016afb0abfababc0796b9831d101691e9defc38adc2a3b2
+    name: metrics-server.addons.k8s.io
+    needsPKI: true
+    selector:
+      k8s-app: metrics-server
+    version: 9.99.0
+  - id: k8s-1.16
+    manifest: certmanager.io/k8s-1.16.yaml
+    manifestHash: 7f4b5dcd74844e809622694dcb16d480ba19b1e6e1c149c4dc54cddd4b966f86
+    name: certmanager.io
+    prune:
+      kinds:
+      - kind: ConfigMap
+        labelSelector: addon.kops.k8s.io/name=certmanager.io,app.kubernetes.io/managed-by=kops
+        namespaces:
+        - kube-system
+      - kind: Service
+        labelSelector: addon.kops.k8s.io/name=certmanager.io,app.kubernetes.io/managed-by=kops
+        namespaces:
+        - kube-system
+      - kind: ServiceAccount
+        labelSelector: addon.kops.k8s.io/name=certmanager.io,app.kubernetes.io/managed-by=kops
+        namespaces:
+        - kube-system
+      - group: apps
+        kind: DaemonSet
+        labelSelector: addon.kops.k8s.io/name=certmanager.io,app.kubernetes.io/managed-by=kops
+      - group: apps
+        kind: Deployment
+        labelSelector: addon.kops.k8s.io/name=certmanager.io,app.kubernetes.io/managed-by=kops
+        namespaces:
+        - kube-system
+      - group: apps
+        kind: StatefulSet
+        labelSelector: addon.kops.k8s.io/name=certmanager.io,app.kubernetes.io/managed-by=kops
+      - group: policy
+        kind: PodDisruptionBudget
+        labelSelector: addon.kops.k8s.io/name=certmanager.io,app.kubernetes.io/managed-by=kops
+      - group: rbac.authorization.k8s.io
+        kind: ClusterRole
+        labelSelector: addon.kops.k8s.io/name=certmanager.io,app.kubernetes.io/managed-by=kops
+      - group: rbac.authorization.k8s.io
+        kind: ClusterRoleBinding
+        labelSelector: addon.kops.k8s.io/name=certmanager.io,app.kubernetes.io/managed-by=kops
+      - group: rbac.authorization.k8s.io
+        kind: Role
+        labelSelector: addon.kops.k8s.io/name=certmanager.io,app.kubernetes.io/managed-by=kops
+        namespaces:
+        - kube-system
+      - group: rbac.authorization.k8s.io
+        kind: RoleBinding
+        labelSelector: addon.kops.k8s.io/name=certmanager.io,app.kubernetes.io/managed-by=kops
+        namespaces:
+        - kube-system
+    selector: null
+    version: 9.99.0
+  - id: k8s-1.11
+    manifest: node-termination-handler.aws/k8s-1.11.yaml
+    manifestHash: c2bf3ef23db2c89345ffbd50db5a0b02610eb224346a27b091cb4e1220ff89cb
+    name: node-termination-handler.aws
+    prune:
+      kinds:
+      - kind: ConfigMap
+        labelSelector: addon.kops.k8s.io/name=node-termination-handler.aws,app.kubernetes.io/managed-by=kops
+      - kind: Service
+        labelSelector: addon.kops.k8s.io/name=node-termination-handler.aws,app.kubernetes.io/managed-by=kops
+      - kind: ServiceAccount
+        labelSelector: addon.kops.k8s.io/name=node-termination-handler.aws,app.kubernetes.io/managed-by=kops
+        namespaces:
+        - kube-system
+      - group: apps
+        kind: DaemonSet
+        labelSelector: addon.kops.k8s.io/name=node-termination-handler.aws,app.kubernetes.io/managed-by=kops
+      - group: apps
+        kind: Deployment
+        labelSelector: addon.kops.k8s.io/name=node-termination-handler.aws,app.kubernetes.io/managed-by=kops
+        namespaces:
+        - kube-system
+      - group: apps
+        kind: StatefulSet
+        labelSelector: addon.kops.k8s.io/name=node-termination-handler.aws,app.kubernetes.io/managed-by=kops
+      - group: policy
+        kind: PodDisruptionBudget
+        labelSelector: addon.kops.k8s.io/name=node-termination-handler.aws,app.kubernetes.io/managed-by=kops
+        namespaces:
+        - kube-system
+      - group: rbac.authorization.k8s.io
+        kind: ClusterRole
+        labelSelector: addon.kops.k8s.io/name=node-termination-handler.aws,app.kubernetes.io/managed-by=kops
+      - group: rbac.authorization.k8s.io
+        kind: ClusterRoleBinding
+        labelSelector: addon.kops.k8s.io/name=node-termination-handler.aws,app.kubernetes.io/managed-by=kops
+      - group: rbac.authorization.k8s.io
+        kind: Role
+        labelSelector: addon.kops.k8s.io/name=node-termination-handler.aws,app.kubernetes.io/managed-by=kops
+      - group: rbac.authorization.k8s.io
+        kind: RoleBinding
+        labelSelector: addon.kops.k8s.io/name=node-termination-handler.aws,app.kubernetes.io/managed-by=kops
+    selector:
+      k8s-addon: node-termination-handler.aws
+    version: 9.99.0
+  - id: k8s-1.19
+    manifest: aws-load-balancer-controller.addons.k8s.io/k8s-1.19.yaml
+    manifestHash: da760fddf2cf54757b8715a92146a7ce5f332199b885bd9b308645180ea215e1
+    name: aws-load-balancer-controller.addons.k8s.io
+    needsPKI: true
+    selector:
+      k8s-addon: aws-load-balancer-controller.addons.k8s.io
+    version: 9.99.0
+  - id: v1.15.0
+    manifest: storage-aws.addons.k8s.io/v1.15.0.yaml
+    manifestHash: 4e2cda50cd5048133aad1b5e28becb60f4629d3f9e09c514a2757c27998b4200
+    name: storage-aws.addons.k8s.io
+    selector:
+      k8s-addon: storage-aws.addons.k8s.io
+    version: 9.99.0
+  - id: k8s-1.16
+    manifest: networking.amazon-vpc-routed-eni/k8s-1.16.yaml
+    manifestHash: eb20d586506b0f23e7a5af988add18d53aaec515feca8b86e1e692be8198d77f
+    name: networking.amazon-vpc-routed-eni
+    needsRollingUpdate: all
+    selector:
+      role.kubernetes.io/networking: "1"
+    version: 9.99.0
+  - id: k8s-1.18
+    manifest: aws-cloud-controller.addons.k8s.io/k8s-1.18.yaml
+    manifestHash: 0bf582f560d70129898b28e061c143810d39afc18c802a6f2fbe03b59d482378
+    name: aws-cloud-controller.addons.k8s.io
+    selector:
+      k8s-addon: aws-cloud-controller.addons.k8s.io
+    version: 9.99.0
+  - id: k8s-1.17
+    manifest: aws-ebs-csi-driver.addons.k8s.io/k8s-1.17.yaml
+    manifestHash: 34ca65bcc6559b50e6c3fdd75252e6cbd2607785819fc78f049c6f3aab71d3a7
+    name: aws-ebs-csi-driver.addons.k8s.io
+    selector:
+      k8s-addon: aws-ebs-csi-driver.addons.k8s.io
+    version: 9.99.0
+  - id: k8s-1.20
+    manifest: snapshot-controller.addons.k8s.io/k8s-1.20.yaml
+    manifestHash: 0ee38c110ae8012a720b23bf9f4f99a977ff813643739f67cc7d9c99d5a66fef
+    name: snapshot-controller.addons.k8s.io
+    needsPKI: true
+    selector:
+      k8s-addon: snapshot-controller.addons.k8s.io
+    version: 9.99.0

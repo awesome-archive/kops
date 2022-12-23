@@ -1,5 +1,5 @@
 /*
-Copyright 2016 The Kubernetes Authors.
+Copyright 2019 The Kubernetes Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -17,46 +17,39 @@ limitations under the License.
 package kubeconfig
 
 import (
+	"crypto/x509/pkix"
 	"fmt"
+	"os/user"
 	"sort"
+	"time"
 
-	"k8s.io/client-go/tools/clientcmd"
-	"k8s.io/klog"
+	"k8s.io/klog/v2"
 	"k8s.io/kops/pkg/apis/kops"
-	"k8s.io/kops/pkg/dns"
+	"k8s.io/kops/pkg/pki"
+	"k8s.io/kops/pkg/rbac"
 	"k8s.io/kops/upup/pkg/fi"
 )
 
-func BuildKubecfg(cluster *kops.Cluster, keyStore fi.Keystore, secretStore fi.SecretStore, status kops.StatusStore, configAccess clientcmd.ConfigAccess) (*KubeconfigBuilder, error) {
+const DefaultKubecfgAdminLifetime = 18 * time.Hour
+
+func BuildKubecfg(cluster *kops.Cluster, keyStore fi.Keystore, secretStore fi.SecretStore, cloud fi.Cloud, admin time.Duration, configUser string, internal bool, kopsStateStore string, useKopsAuthenticationPlugin bool) (*KubeconfigBuilder, error) {
 	clusterName := cluster.ObjectMeta.Name
 
-	master := cluster.Spec.MasterPublicName
-	if master == "" {
-		master = "api." + clusterName
+	var server string
+	if internal {
+		server = "https://" + cluster.APIInternalName()
+	} else {
+		if cluster.Spec.API.PublicName != "" {
+			server = "https://" + cluster.Spec.API.PublicName
+		} else {
+			server = "https://api." + clusterName
+		}
 	}
 
-	server := "https://" + master
-
-	// We use the LoadBalancer where we know the master DNS name is otherwise unreachable
-	useELBName := false
-
-	// If the master DNS is a gossip DNS name; there's no way that name can resolve outside the cluster
-	if dns.IsGossipHostname(master) {
-		useELBName = true
-	}
-
-	// If the DNS is set up as a private HostedZone, but here we have to be
-	// careful that we aren't accessing the API over DirectConnect (or a VPN).
-	// We differentiate using the heuristic that if we have an internal ELB
-	// we are likely connected directly to the VPC.
-	privateDNS := cluster.Spec.Topology != nil && cluster.Spec.Topology.DNS.Type == kops.DNSTypePrivate
-	internalELB := cluster.Spec.API != nil && cluster.Spec.API.LoadBalancer != nil && cluster.Spec.API.LoadBalancer.Type == kops.LoadBalancerTypeInternal
-	if privateDNS && !internalELB {
-		useELBName = true
-	}
-
-	if useELBName {
-		ingresses, err := status.GetApiIngressStatus(cluster)
+	// If a load balancer exists we use it, except for when an SSL certificate is set.
+	// This should avoid a lot of pain with DNS pre-creation.
+	if cluster.Spec.API.LoadBalancer != nil && (cluster.Spec.API.LoadBalancer.SSLCertificate == "" || admin != 0) {
+		ingresses, err := cloud.GetApiIngressStatus(cluster)
 		if err != nil {
 			return nil, fmt.Errorf("error getting ingress status: %v", err)
 		}
@@ -73,7 +66,7 @@ func BuildKubecfg(cluster *kops.Cluster, keyStore fi.Keystore, secretStore fi.Se
 
 		sort.Strings(targets)
 		if len(targets) == 0 {
-			klog.Warningf("Did not find API endpoint for gossip hostname; may not be able to reach cluster")
+			klog.Warningf("Did not find API endpoint; may not be able to reach cluster")
 		} else {
 			if len(targets) != 1 {
 				klog.Warningf("Found multiple API endpoints (%v), choosing arbitrarily", targets)
@@ -82,18 +75,25 @@ func BuildKubecfg(cluster *kops.Cluster, keyStore fi.Keystore, secretStore fi.Se
 		}
 	}
 
-	b := NewKubeconfigBuilder(configAccess)
+	b := NewKubeconfigBuilder()
+
+	// Use the secondary load balancer port if a certificate is on the primary listener
+	if admin != 0 && cluster.Spec.API.LoadBalancer != nil && cluster.Spec.API.LoadBalancer.SSLCertificate != "" && cluster.Spec.API.LoadBalancer.Class == kops.LoadBalancerClassNetwork {
+		server = server + ":8443"
+	}
 
 	b.Context = clusterName
+	b.Server = server
 
-	// add the CA Cert to the kubeconfig only if we didn't specify a SSL cert for the LB
-	if cluster.Spec.API == nil || cluster.Spec.API.LoadBalancer == nil || cluster.Spec.API.LoadBalancer.SSLCertificate == "" {
-		cert, _, _, err := keyStore.FindKeypair(fi.CertificateId_CA)
+	// add the CA Cert to the kubeconfig only if we didn't specify a certificate for the LB
+	//  or if we're using admin credentials and the secondary port
+	if cluster.Spec.API.LoadBalancer == nil || cluster.Spec.API.LoadBalancer.SSLCertificate == "" || cluster.Spec.API.LoadBalancer.Class == kops.LoadBalancerClassNetwork || internal {
+		keySet, err := keyStore.FindKeyset(fi.CertificateIDCA)
 		if err != nil {
 			return nil, fmt.Errorf("error fetching CA keypair: %v", err)
 		}
-		if cert != nil {
-			b.CACert, err = cert.AsBytes()
+		if keySet != nil {
+			b.CACerts, err = keySet.ToCertificateBytes()
 			if err != nil {
 				return nil, err
 			}
@@ -102,40 +102,58 @@ func BuildKubecfg(cluster *kops.Cluster, keyStore fi.Keystore, secretStore fi.Se
 		}
 	}
 
-	{
-		cert, key, _, err := keyStore.FindKeypair("kubecfg")
+	if admin != 0 {
+		cn := "kubecfg"
+		user, err := user.Current()
+		if err != nil || user == nil {
+			klog.Infof("unable to get user: %v", err)
+		} else {
+			cn += "-" + user.Name
+		}
+
+		req := pki.IssueCertRequest{
+			Signer: fi.CertificateIDCA,
+			Type:   "client",
+			Subject: pkix.Name{
+				CommonName:   cn,
+				Organization: []string{rbac.SystemPrivilegedGroup},
+			},
+			Validity: admin,
+		}
+		cert, privateKey, _, err := pki.IssueCert(&req, keyStore)
 		if err != nil {
-			return nil, fmt.Errorf("error fetching kubecfg keypair: %v", err)
+			return nil, err
 		}
-		if cert != nil {
-			b.ClientCert, err = cert.AsBytes()
-			if err != nil {
-				return nil, err
-			}
-		} else {
-			return nil, fmt.Errorf("cannot find kubecfg certificate")
+		b.ClientCert, err = cert.AsBytes()
+		if err != nil {
+			return nil, err
 		}
-		if key != nil {
-			b.ClientKey, err = key.AsBytes()
-			if err != nil {
-				return nil, err
-			}
-		} else {
-			return nil, fmt.Errorf("cannot find kubecfg key")
+		b.ClientKey, err = privateKey.AsBytes()
+		if err != nil {
+			return nil, err
 		}
+	}
+
+	if useKopsAuthenticationPlugin {
+		b.AuthenticationExec = []string{
+			"kops",
+			"helpers",
+			"kubectl-auth",
+			"--cluster=" + clusterName,
+			"--state=" + kopsStateStore,
+		}
+
+		// If there's an existing client-cert / client-key, we need to clear it so it won't be used
+		b.ClientCert = nil
+		b.ClientKey = nil
 	}
 
 	b.Server = server
 
-	if secretStore != nil {
-		secret, err := secretStore.FindSecret("kube")
-		if err != nil {
-			return nil, err
-		}
-		if secret != nil {
-			b.KubeUser = "admin"
-			b.KubePassword = string(secret.Data)
-		}
+	if configUser == "" {
+		b.User = cluster.ObjectMeta.Name
+	} else {
+		b.User = configUser
 	}
 
 	return b, nil

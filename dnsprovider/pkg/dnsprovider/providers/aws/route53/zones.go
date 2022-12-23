@@ -1,5 +1,5 @@
 /*
-Copyright 2016 The Kubernetes Authors.
+Copyright 2019 The Kubernetes Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -66,6 +66,7 @@ func (zones Zones) Remove(zone dnsprovider.Zone) error {
 	}
 	return nil
 }
+
 func (zones Zones) New(name string) (dnsprovider.Zone, error) {
 	id := string(uuid.NewUUID())
 	managedZone := route53.HostedZone{Id: &id, Name: &name}

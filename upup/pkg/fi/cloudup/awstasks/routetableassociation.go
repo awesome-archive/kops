@@ -1,5 +1,5 @@
 /*
-Copyright 2016 The Kubernetes Authors.
+Copyright 2019 The Kubernetes Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -21,17 +21,17 @@ import (
 
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/ec2"
-	"k8s.io/klog"
+	"k8s.io/klog/v2"
 	"k8s.io/kops/upup/pkg/fi"
 	"k8s.io/kops/upup/pkg/fi/cloudup/awsup"
-	"k8s.io/kops/upup/pkg/fi/cloudup/cloudformation"
 	"k8s.io/kops/upup/pkg/fi/cloudup/terraform"
+	"k8s.io/kops/upup/pkg/fi/cloudup/terraformWriter"
 )
 
-//go:generate fitask -type=RouteTableAssociation
+// +kops:fitask
 type RouteTableAssociation struct {
 	Name      *string
-	Lifecycle *fi.Lifecycle
+	Lifecycle fi.Lifecycle
 
 	ID         *string
 	RouteTable *RouteTable
@@ -42,8 +42,8 @@ func (s *RouteTableAssociation) CompareWithID() *string {
 	return s.ID
 }
 
-func (e *RouteTableAssociation) Find(c *fi.Context) (*RouteTableAssociation, error) {
-	cloud := c.Cloud.(awsup.AWSCloud)
+func (e *RouteTableAssociation) Find(c *fi.CloudupContext) (*RouteTableAssociation, error) {
+	cloud := c.T.Cloud.(awsup.AWSCloud)
 
 	routeTableID := e.RouteTable.ID
 	subnetID := e.Subnet.ID
@@ -90,8 +90,8 @@ func (e *RouteTableAssociation) Find(c *fi.Context) (*RouteTableAssociation, err
 	return nil, nil
 }
 
-func (e *RouteTableAssociation) Run(c *fi.Context) error {
-	return fi.DefaultDeltaRunMethod(e, c)
+func (e *RouteTableAssociation) Run(c *fi.CloudupContext) error {
+	return fi.CloudupDefaultDeltaRunMethod(e, c)
 }
 
 func (s *RouteTableAssociation) CheckChanges(a, e, changes *RouteTableAssociation) error {
@@ -122,7 +122,7 @@ func findExistingRouteTableForSubnet(cloud awsup.AWSCloud, subnet *Subnet) (*ec2
 		return nil, fmt.Errorf("subnet ID not set")
 	}
 
-	subnetID := fi.StringValue(subnet.ID)
+	subnetID := fi.ValueOf(subnet.ID)
 
 	request := &ec2.DescribeRouteTablesInput{
 		Filters: []*ec2.Filter{awsup.NewEC2Filter("association.subnet-id", subnetID)},
@@ -187,8 +187,8 @@ func (_ *RouteTableAssociation) RenderAWS(t *awsup.AWSAPITarget, a, e, changes *
 }
 
 type terraformRouteTableAssociation struct {
-	SubnetID     *terraform.Literal `json:"subnet_id"`
-	RouteTableID *terraform.Literal `json:"route_table_id"`
+	SubnetID     *terraformWriter.Literal `cty:"subnet_id"`
+	RouteTableID *terraformWriter.Literal `cty:"route_table_id"`
 }
 
 func (_ *RouteTableAssociation) RenderTerraform(t *terraform.TerraformTarget, a, e, changes *RouteTableAssociation) error {
@@ -200,24 +200,6 @@ func (_ *RouteTableAssociation) RenderTerraform(t *terraform.TerraformTarget, a,
 	return t.RenderResource("aws_route_table_association", *e.Name, tf)
 }
 
-func (e *RouteTableAssociation) TerraformLink() *terraform.Literal {
-	return terraform.LiteralSelfLink("aws_route_table_association", *e.Name)
-}
-
-type cloudformationRouteTableAssociation struct {
-	SubnetID     *cloudformation.Literal `json:"SubnetId,omitempty"`
-	RouteTableID *cloudformation.Literal `json:"RouteTableId,omitempty"`
-}
-
-func (_ *RouteTableAssociation) RenderCloudformation(t *cloudformation.CloudformationTarget, a, e, changes *RouteTableAssociation) error {
-	cf := &cloudformationRouteTableAssociation{
-		SubnetID:     e.Subnet.CloudformationLink(),
-		RouteTableID: e.RouteTable.CloudformationLink(),
-	}
-
-	return t.RenderResource("AWS::EC2::SubnetRouteTableAssociation", *e.Name, cf)
-}
-
-func (e *RouteTableAssociation) CloudformationLink() *cloudformation.Literal {
-	return cloudformation.Ref("AWS::EC2::SubnetRouteTableAssociation", *e.Name)
+func (e *RouteTableAssociation) TerraformLink() *terraformWriter.Literal {
+	return terraformWriter.LiteralSelfLink("aws_route_table_association", *e.Name)
 }

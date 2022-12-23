@@ -1,5 +1,5 @@
 /*
-Copyright 2016 The Kubernetes Authors.
+Copyright 2019 The Kubernetes Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -18,23 +18,25 @@ package dotasks
 
 import (
 	"context"
+	"fmt"
 
 	"github.com/digitalocean/godo"
 
-	"k8s.io/kops/pkg/resources/digitalocean"
+	"k8s.io/klog/v2"
 	"k8s.io/kops/upup/pkg/fi"
 	"k8s.io/kops/upup/pkg/fi/cloudup/do"
 	"k8s.io/kops/upup/pkg/fi/cloudup/terraform"
 )
 
-//go:generate fitask -type=Volume
+// +kops:fitask
 type Volume struct {
 	Name      *string
 	ID        *string
-	Lifecycle *fi.Lifecycle
+	Lifecycle fi.Lifecycle
 
 	SizeGB *int64
 	Region *string
+	Tags   map[string]string
 }
 
 var _ fi.CompareWithID = &Volume{}
@@ -43,26 +45,26 @@ func (v *Volume) CompareWithID() *string {
 	return v.ID
 }
 
-func (v *Volume) Find(c *fi.Context) (*Volume, error) {
-	cloud := c.Cloud.(*digitalocean.Cloud)
-	volService := cloud.Volumes()
+func (v *Volume) Find(c *fi.CloudupContext) (*Volume, error) {
+	cloud := c.T.Cloud.(do.DOCloud)
+	volService := cloud.VolumeService()
 
 	volumes, _, err := volService.ListVolumes(context.TODO(), &godo.ListVolumeParams{
-		Region: cloud.Region,
-		Name:   fi.StringValue(v.Name),
+		Region: cloud.Region(),
+		Name:   fi.ValueOf(v.Name),
 	})
 	if err != nil {
 		return nil, err
 	}
 
 	for _, volume := range volumes {
-		if volume.Name == fi.StringValue(v.Name) {
+		if volume.Name == fi.ValueOf(v.Name) {
 			return &Volume{
-				Name:      fi.String(volume.Name),
-				ID:        fi.String(volume.ID),
+				Name:      fi.PtrTo(volume.Name),
+				ID:        fi.PtrTo(volume.ID),
 				Lifecycle: v.Lifecycle,
-				SizeGB:    fi.Int64(volume.SizeGigaBytes),
-				Region:    fi.String(volume.Region.Slug),
+				SizeGB:    fi.PtrTo(volume.SizeGigaBytes),
+				Region:    fi.PtrTo(volume.Region.Slug),
 			}, nil
 		}
 	}
@@ -71,8 +73,8 @@ func (v *Volume) Find(c *fi.Context) (*Volume, error) {
 	return nil, nil
 }
 
-func (v *Volume) Run(c *fi.Context) error {
-	return fi.DefaultDeltaRunMethod(v, c)
+func (v *Volume) Run(c *fi.CloudupContext) error {
+	return fi.CloudupDefaultDeltaRunMethod(v, c)
 }
 
 func (_ *Volume) CheckChanges(a, e, changes *Volume) error {
@@ -108,21 +110,31 @@ func (_ *Volume) RenderDO(t *do.DOAPITarget, a, e, changes *Volume) error {
 		return nil
 	}
 
-	volService := t.Cloud.Volumes()
+	tagArray := []string{}
+
+	for k, v := range e.Tags {
+		// DO tags don't accept =. Separate the key and value with an ":"
+		klog.V(10).Infof("DO - Join the volume tag - %s", fmt.Sprintf("%s:%s", k, v))
+		tagArray = append(tagArray, fmt.Sprintf("%s:%s", k, v))
+	}
+
+	volService := t.Cloud.VolumeService()
 	_, _, err := volService.CreateVolume(context.TODO(), &godo.VolumeCreateRequest{
-		Name:          fi.StringValue(e.Name),
-		Region:        fi.StringValue(e.Region),
-		SizeGigaBytes: fi.Int64Value(e.SizeGB),
+		Name:          fi.ValueOf(e.Name),
+		Region:        fi.ValueOf(e.Region),
+		SizeGigaBytes: fi.ValueOf(e.SizeGB),
+		Tags:          tagArray,
 	})
+
 	return err
 }
 
 // terraformVolume represents the digitalocean_volume resource in terraform
 // https://www.terraform.io/docs/providers/do/r/volume.html
 type terraformVolume struct {
-	Name   *string `json:"name"`
-	SizeGB *int64  `json:"size"`
-	Region *string `json:"region"`
+	Name   *string `cty:"name"`
+	SizeGB *int64  `cty:"size"`
+	Region *string `cty:"region"`
 }
 
 func (_ *Volume) RenderTerraform(t *terraform.TerraformTarget, a, e, changes *Volume) error {

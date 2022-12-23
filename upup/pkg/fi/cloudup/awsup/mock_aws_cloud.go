@@ -1,5 +1,5 @@
 /*
-Copyright 2016 The Kubernetes Authors.
+Copyright 2019 The Kubernetes Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -20,16 +20,21 @@ import (
 	"fmt"
 
 	"github.com/aws/aws-sdk-go/aws"
+	"github.com/aws/aws-sdk-go/aws/session"
 	"github.com/aws/aws-sdk-go/service/autoscaling/autoscalingiface"
-	"github.com/aws/aws-sdk-go/service/cloudformation"
 	"github.com/aws/aws-sdk-go/service/ec2"
 	"github.com/aws/aws-sdk-go/service/ec2/ec2iface"
+	"github.com/aws/aws-sdk-go/service/elb"
 	"github.com/aws/aws-sdk-go/service/elb/elbiface"
+	"github.com/aws/aws-sdk-go/service/elbv2"
 	"github.com/aws/aws-sdk-go/service/elbv2/elbv2iface"
+	"github.com/aws/aws-sdk-go/service/eventbridge/eventbridgeiface"
 	"github.com/aws/aws-sdk-go/service/iam/iamiface"
 	"github.com/aws/aws-sdk-go/service/route53/route53iface"
+	"github.com/aws/aws-sdk-go/service/sqs/sqsiface"
+	"github.com/aws/aws-sdk-go/service/ssm/ssmiface"
 	v1 "k8s.io/api/core/v1"
-	"k8s.io/klog"
+	"k8s.io/klog/v2"
 	"k8s.io/kops/dnsprovider/pkg/dnsprovider"
 	dnsproviderroute53 "k8s.io/kops/dnsprovider/pkg/dnsprovider/providers/aws/route53"
 	"k8s.io/kops/pkg/apis/kops"
@@ -72,22 +77,32 @@ func BuildMockAWSCloud(region string, zoneLetters string) *MockAWSCloud {
 }
 
 type MockCloud struct {
-	MockAutoscaling    autoscalingiface.AutoScalingAPI
-	MockCloudFormation *cloudformation.CloudFormation
-	MockEC2            ec2iface.EC2API
-	MockIAM            iamiface.IAMAPI
-	MockRoute53        route53iface.Route53API
-	MockELB            elbiface.ELBAPI
-	MockELBV2          elbv2iface.ELBV2API
-	MockSpotinst       spotinst.Service
+	MockAutoscaling autoscalingiface.AutoScalingAPI
+	MockEC2         ec2iface.EC2API
+	MockIAM         iamiface.IAMAPI
+	MockRoute53     route53iface.Route53API
+	MockELB         elbiface.ELBAPI
+	MockELBV2       elbv2iface.ELBV2API
+	MockSpotinst    spotinst.Cloud
+	MockSQS         sqsiface.SQSAPI
+	MockEventBridge eventbridgeiface.EventBridgeAPI
+	MockSSM         ssmiface.SSMAPI
 }
 
 func (c *MockAWSCloud) DeleteGroup(g *cloudinstances.CloudInstanceGroup) error {
 	return deleteGroup(c, g)
 }
 
-func (c *MockAWSCloud) DeleteInstance(i *cloudinstances.CloudInstanceGroupMember) error {
+func (c *MockAWSCloud) DeleteInstance(i *cloudinstances.CloudInstance) error {
 	return deleteInstance(c, i)
+}
+
+func (c *MockAWSCloud) DeregisterInstance(i *cloudinstances.CloudInstance) error {
+	return nil
+}
+
+func (c *MockAWSCloud) DetachInstance(i *cloudinstances.CloudInstance) error {
+	return detachInstance(c, i)
 }
 
 func (c *MockAWSCloud) GetCloudGroups(cluster *kops.Cluster, instancegroups []*kops.InstanceGroup, warnUnmatched bool, nodes []v1.Node) (map[string]*cloudinstances.CloudInstanceGroup, error) {
@@ -154,6 +169,10 @@ func (c *MockAWSCloud) GetTags(resourceID string) (map[string]string, error) {
 	return getTags(c, resourceID)
 }
 
+func (c *MockAWSCloud) UpdateTags(id string, tags map[string]string) error {
+	return updateTags(c, id, tags)
+}
+
 func (c *MockAWSCloud) GetELBTags(loadBalancerName string) (map[string]string, error) {
 	return getELBTags(c, loadBalancerName)
 }
@@ -174,6 +193,30 @@ func (c *MockAWSCloud) CreateELBV2Tags(ResourceArn string, tags map[string]strin
 	return createELBV2Tags(c, ResourceArn, tags)
 }
 
+func (c *MockAWSCloud) RemoveELBV2Tags(ResourceArn string, tags map[string]string) error {
+	return removeELBV2Tags(c, ResourceArn, tags)
+}
+
+func (c *MockAWSCloud) FindELBByNameTag(findNameTag string) (*elb.LoadBalancerDescription, error) {
+	return findELBByNameTag(c, findNameTag)
+}
+
+func (c *MockAWSCloud) DescribeELBTags(loadBalancerNames []string) (map[string][]*elb.Tag, error) {
+	return describeELBTags(c, loadBalancerNames)
+}
+
+func (c *MockAWSCloud) FindELBV2ByNameTag(findNameTag string) (*elbv2.LoadBalancer, error) {
+	return findELBV2ByNameTag(c, findNameTag)
+}
+
+func (c *MockAWSCloud) DescribeELBV2Tags(loadBalancerArns []string) (map[string][]*elbv2.Tag, error) {
+	return describeELBV2Tags(c, loadBalancerArns)
+}
+
+func (c *MockAWSCloud) FindELBV2NetworkInterfacesByName(vpcID, loadBalancerName string) ([]*ec2.NetworkInterface, error) {
+	return nil, nil
+}
+
 func (c *MockAWSCloud) DescribeInstance(instanceID string) (*ec2.Instance, error) {
 	return nil, fmt.Errorf("MockAWSCloud DescribeInstance not implemented")
 }
@@ -183,7 +226,7 @@ func (c *MockAWSCloud) DescribeVPC(vpcID string) (*ec2.Vpc, error) {
 }
 
 func (c *MockAWSCloud) ResolveImage(name string) (*ec2.Image, error) {
-	return resolveImage(c.MockEC2, name)
+	return resolveImage(c.MockSSM, c.MockEC2, name)
 }
 
 func (c *MockAWSCloud) WithTags(tags map[string]string) AWSCloud {
@@ -191,13 +234,6 @@ func (c *MockAWSCloud) WithTags(tags map[string]string) AWSCloud {
 	*m = *c
 	m.tags = tags
 	return m
-}
-
-func (c *MockAWSCloud) CloudFormation() *cloudformation.CloudFormation {
-	if c.MockEC2 == nil {
-		klog.Fatalf("MockAWSCloud MockCloudFormation not set")
-	}
-	return c.MockCloudFormation
 }
 
 func (c *MockAWSCloud) EC2() ec2iface.EC2API {
@@ -242,21 +278,46 @@ func (c *MockAWSCloud) Route53() route53iface.Route53API {
 	return c.MockRoute53
 }
 
-func (c *MockAWSCloud) Spotinst() spotinst.Service {
+func (c *MockAWSCloud) Spotinst() spotinst.Cloud {
 	if c.MockSpotinst == nil {
 		klog.Fatalf("MockSpotinst not set")
 	}
 	return c.MockSpotinst
 }
 
+func (c *MockAWSCloud) SQS() sqsiface.SQSAPI {
+	if c.MockSQS == nil {
+		klog.Fatalf("MockSQS not set")
+	}
+	return c.MockSQS
+}
+
+func (c *MockAWSCloud) EventBridge() eventbridgeiface.EventBridgeAPI {
+	if c.MockEventBridge == nil {
+		klog.Fatalf("MockEventBridgess not set")
+	}
+	return c.MockEventBridge
+}
+
+func (c *MockAWSCloud) SSM() ssmiface.SSMAPI {
+	if c.MockSSM == nil {
+		klog.Fatalf("MockSSM not set")
+	}
+	return c.MockSSM
+}
+
 func (c *MockAWSCloud) FindVPCInfo(id string) (*fi.VPCInfo, error) {
 	return findVPCInfo(c, id)
+}
+
+func (c *MockAWSCloud) GetApiIngressStatus(cluster *kops.Cluster) ([]fi.ApiIngressStatus, error) {
+	return getApiIngressStatus(c, cluster)
 }
 
 // DefaultInstanceType determines an instance type for the specified cluster & instance group
 func (c *MockAWSCloud) DefaultInstanceType(cluster *kops.Cluster, ig *kops.InstanceGroup) (string, error) {
 	switch ig.Spec.Role {
-	case kops.InstanceGroupRoleMaster:
+	case kops.InstanceGroupRoleControlPlane, kops.InstanceGroupRoleAPIServer:
 		return "m3.medium", nil
 	case kops.InstanceGroupRoleNode:
 		return "t2.medium", nil
@@ -265,4 +326,73 @@ func (c *MockAWSCloud) DefaultInstanceType(cluster *kops.Cluster, ig *kops.Insta
 	default:
 		return "", fmt.Errorf("MockAWSCloud DefaultInstanceType does not handle %s", ig.Spec.Role)
 	}
+}
+
+// DescribeInstanceType calls ec2.DescribeInstanceType to get information for a particular instance type
+func (c *MockAWSCloud) DescribeInstanceType(instanceType string) (*ec2.InstanceTypeInfo, error) {
+	if instanceType == "t2.invalidType" {
+		return nil, fmt.Errorf("invalid instance type %q specified", "t2.invalidType")
+	}
+	info := &ec2.InstanceTypeInfo{
+		NetworkInfo: &ec2.NetworkInfo{
+			MaximumNetworkInterfaces:  aws.Int64(1),
+			Ipv4AddressesPerInterface: aws.Int64(1),
+		},
+		MemoryInfo: &ec2.MemoryInfo{
+			SizeInMiB: aws.Int64(1024),
+		},
+		VCpuInfo: &ec2.VCpuInfo{
+			DefaultVCpus: aws.Int64(2),
+		},
+	}
+	if instanceType == "m3.medium" {
+		info.InstanceStorageInfo = &ec2.InstanceStorageInfo{
+			Disks: []*ec2.DiskInfo{
+				{
+					Count:    aws.Int64(1),
+					SizeInGB: aws.Int64(1024),
+				},
+			},
+		}
+	}
+
+	switch instanceType {
+	case "c5.large", "m3.medium", "m4.large", "m5.large", "m5.xlarge", "t3.micro", "t3.medium", "t3.large", "c4.large":
+		info.ProcessorInfo = &ec2.ProcessorInfo{
+			SupportedArchitectures: []*string{
+				aws.String(ec2.ArchitectureTypeX8664),
+			},
+		}
+	case "a1.large", "m6g.xlarge":
+		info.ProcessorInfo = &ec2.ProcessorInfo{
+			SupportedArchitectures: []*string{
+				aws.String(ec2.ArchitectureTypeArm64),
+			},
+		}
+	case "t2.micro", "t2.medium":
+		info.ProcessorInfo = &ec2.ProcessorInfo{
+			SupportedArchitectures: []*string{
+				aws.String(ec2.ArchitectureTypeI386),
+				aws.String(ec2.ArchitectureTypeX8664),
+			},
+		}
+	case "g4dn.xlarge", "g4ad.16xlarge":
+		info.ProcessorInfo = &ec2.ProcessorInfo{
+			SupportedArchitectures: []*string{
+				aws.String(ec2.ArchitectureTypeX8664),
+			},
+		}
+		info.GpuInfo = &ec2.GpuInfo{}
+	}
+
+	return info, nil
+}
+
+// AccountInfo returns the AWS account ID and AWS partition that we are deploying into
+func (c *MockAWSCloud) AccountInfo() (string, string, error) {
+	return "123456789012", "aws-test", nil
+}
+
+func (c *MockAWSCloud) Session() (*session.Session, error) {
+	return nil, nil
 }

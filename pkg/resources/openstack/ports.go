@@ -17,8 +17,7 @@ limitations under the License.
 package openstack
 
 import (
-	"strings"
-
+	"github.com/gophercloud/gophercloud/openstack/networking/v2/networks"
 	"github.com/gophercloud/gophercloud/openstack/networking/v2/ports"
 	"k8s.io/kops/pkg/resources"
 	"k8s.io/kops/upup/pkg/fi"
@@ -29,27 +28,44 @@ const (
 	typePort = "Port"
 )
 
-func (os *clusterDiscoveryOS) ListPorts() ([]*resources.Resource, error) {
+func (os *clusterDiscoveryOS) ListPorts(network networks.Network) ([]*resources.Resource, error) {
 	var resourceTrackers []*resources.Resource
 
-	ports, err := os.osCloud.ListPorts(ports.ListOpts{})
+	projectPorts, err := os.osCloud.ListPorts(ports.ListOpts{
+		TenantID:  network.ProjectID,
+		NetworkID: network.ID,
+	})
 	if err != nil {
 		return nil, err
 	}
 
-	for _, port := range ports {
-		clusteReplaced := strings.Replace(os.clusterName, ".", "-", -1)
-		if strings.HasSuffix(port.Name, clusteReplaced) {
-			resourceTracker := &resources.Resource{
-				Name: port.Name,
-				ID:   port.ID,
-				Type: typePort,
-				Deleter: func(cloud fi.Cloud, r *resources.Resource) error {
-					return cloud.(openstack.OpenstackCloud).DeletePort(r.ID)
-				},
+	preExistingNet := true
+	if os.clusterName == network.Name {
+		preExistingNet = false
+	}
+
+	filteredPorts := []ports.Port{}
+	if preExistingNet {
+		// if we have preExistingNet, the port must have cluster tag
+		for _, singlePort := range projectPorts {
+			if fi.ArrayContains(singlePort.Tags, os.clusterName) {
+				filteredPorts = append(filteredPorts, singlePort)
 			}
-			resourceTrackers = append(resourceTrackers, resourceTracker)
 		}
+	} else {
+		filteredPorts = projectPorts
+	}
+
+	for _, port := range filteredPorts {
+		resourceTracker := &resources.Resource{
+			Name: port.Name,
+			ID:   port.ID,
+			Type: typePort,
+			Deleter: func(cloud fi.Cloud, r *resources.Resource) error {
+				return cloud.(openstack.OpenstackCloud).DeletePort(r.ID)
+			},
+		}
+		resourceTrackers = append(resourceTrackers, resourceTracker)
 	}
 	return resourceTrackers, nil
 }

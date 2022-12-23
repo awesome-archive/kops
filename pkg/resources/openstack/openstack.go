@@ -1,5 +1,5 @@
 /*
-Copyright 2018 The Kubernetes Authors.
+Copyright 2019 The Kubernetes Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -28,18 +28,16 @@ type clusterDiscoveryOS struct {
 	cloud       fi.Cloud
 	osCloud     openstack.OpenstackCloud
 	clusterName string
-
-	zones []string
 }
 
 // ListResources lists the OpenStack resources kops manages
-func ListResources(cloud openstack.OpenstackCloud, clusterName string) (map[string]*resources.Resource, error) {
+func ListResources(cloud openstack.OpenstackCloud, clusterInfo resources.ClusterInfo) (map[string]*resources.Resource, error) {
 	resources := make(map[string]*resources.Resource)
 
 	os := &clusterDiscoveryOS{
 		cloud:       cloud,
 		osCloud:     cloud,
-		clusterName: clusterName,
+		clusterName: clusterInfo.Name,
 	}
 
 	listFunctions := []openstackListFn{
@@ -47,10 +45,6 @@ func ListResources(cloud openstack.OpenstackCloud, clusterName string) (map[stri
 		os.ListInstances,
 		os.ListServerGroups,
 		os.ListVolumes,
-		os.ListLBListener,
-		os.ListLBPools,
-		os.ListLB,
-		os.ListPorts,
 		os.ListSecurityGroups,
 		os.ListNetwork,
 		os.ListDNSRecordsets,

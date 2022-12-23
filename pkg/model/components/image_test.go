@@ -1,5 +1,5 @@
 /*
-Copyright 2018 The Kubernetes Authors.
+Copyright 2019 The Kubernetes Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -22,10 +22,12 @@ import (
 
 	"k8s.io/kops/pkg/apis/kops"
 	"k8s.io/kops/pkg/assets"
+	"k8s.io/kops/pkg/featureflag"
 	"k8s.io/kops/util/pkg/vfs"
 )
 
 func TestImage(t *testing.T) {
+	featureflag.ParseFlags("-ImageDigest")
 	grid := []struct {
 		Component string
 		Cluster   *kops.Cluster
@@ -39,52 +41,22 @@ func TestImage(t *testing.T) {
 			Component: "kube-apiserver",
 			Cluster: &kops.Cluster{
 				Spec: kops.ClusterSpec{
-					KubernetesVersion: "v1.9.0",
-				},
-			},
-			Expected: "gcr.io/google_containers/kube-apiserver:v1.9.0",
-		},
-		{
-			Component: "kube-apiserver",
-			Cluster: &kops.Cluster{
-				Spec: kops.ClusterSpec{
-					KubernetesVersion: "v1.10.0",
-				},
-			},
-			Expected: "k8s.gcr.io/kube-apiserver:v1.10.0",
-		},
-		{
-			Component: "kube-apiserver",
-			Cluster: &kops.Cluster{
-				Spec: kops.ClusterSpec{
-					KubernetesVersion: "1.10.0",
-				},
-			},
-			Expected: "k8s.gcr.io/kube-apiserver:v1.10.0",
-		},
-		{
-			Component: "kube-apiserver",
-			Cluster: &kops.Cluster{
-				Spec: kops.ClusterSpec{
-					KubernetesVersion: "memfs://v1.9.0-download/",
+					KubernetesVersion: "memfs://v1.20.0-download/",
 				},
 			},
 			VFS: map[string]string{
-				"memfs://v1.9.0-download/bin/linux/amd64/kube-apiserver.docker_tag": "1-9-0dockertag",
+				"memfs://v1.20.0-download/bin/linux/amd64/kube-apiserver.docker_tag": "1-20-0dockertag",
 			},
-			Expected: "gcr.io/google_containers/kube-apiserver:1-9-0dockertag",
+			Expected: "registry.k8s.io/kube-apiserver-amd64:1-20-0dockertag",
 		},
 		{
 			Component: "kube-apiserver",
 			Cluster: &kops.Cluster{
 				Spec: kops.ClusterSpec{
-					KubernetesVersion: "memfs://v1.10.0-download/",
+					KubernetesVersion: "1.20.0",
 				},
 			},
-			VFS: map[string]string{
-				"memfs://v1.10.0-download/bin/linux/amd64/kube-apiserver.docker_tag": "1-10-0dockertag",
-			},
-			Expected: "k8s.gcr.io/kube-apiserver:1-10-0dockertag",
+			Expected: "registry.k8s.io/kube-apiserver:v1.20.0",
 		},
 	}
 
@@ -104,7 +76,7 @@ func TestImage(t *testing.T) {
 			}
 		}
 
-		assetBuilder := assets.NewAssetBuilder(g.Cluster, "")
+		assetBuilder := assets.NewAssetBuilder(g.Cluster, false)
 		actual, err := Image(g.Component, &g.Cluster.Spec, assetBuilder)
 		if err != nil {
 			t.Errorf("unexpected error from image %q %v: %v",

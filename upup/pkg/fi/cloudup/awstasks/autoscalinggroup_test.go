@@ -1,5 +1,5 @@
 /*
-Copyright 2016 The Kubernetes Authors.
+Copyright 2019 The Kubernetes Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -17,6 +17,7 @@ limitations under the License.
 package awstasks
 
 import (
+	"fmt"
 	"sort"
 	"testing"
 
@@ -25,7 +26,7 @@ import (
 
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/autoscaling"
-	"github.com/ghodss/yaml"
+	"sigs.k8s.io/yaml"
 )
 
 func TestGetASGTagsToDelete(t *testing.T) {
@@ -201,16 +202,16 @@ func TestAutoscalingGroupTerraformRender(t *testing.T) {
 	cases := []*renderTest{
 		{
 			Resource: &AutoscalingGroup{
-				Name:                fi.String("test"),
-				Granularity:         fi.String("5min"),
-				LaunchConfiguration: &LaunchConfiguration{Name: fi.String("test_lc")},
-				MaxSize:             fi.Int64(10),
-				Metrics:             []string{"test"},
-				MinSize:             fi.Int64(1),
+				Name:           fi.PtrTo("test"),
+				Granularity:    fi.PtrTo("5min"),
+				LaunchTemplate: &LaunchTemplate{Name: fi.PtrTo("test_lc")},
+				MaxSize:        fi.PtrTo(int64(10)),
+				Metrics:        []string{"test"},
+				MinSize:        fi.PtrTo(int64(1)),
 				Subnets: []*Subnet{
 					{
-						Name: fi.String("test-sg"),
-						ID:   fi.String("sg-1111"),
+						Name: fi.PtrTo("test-sg"),
+						ID:   fi.PtrTo("sg-1111"),
 					},
 				},
 				Tags: map[string]string{
@@ -223,47 +224,55 @@ func TestAutoscalingGroupTerraformRender(t *testing.T) {
 }
 
 resource "aws_autoscaling_group" "test" {
-  name                 = "test"
-  launch_configuration = "${aws_launch_configuration.test_lc.id}"
-  max_size             = 10
-  min_size             = 1
-  vpc_zone_identifier  = ["${aws_subnet.test-sg.id}"]
-
-  tag = {
-    key                 = "cluster"
-    value               = "test"
-    propagate_at_launch = true
+  enabled_metrics = ["test"]
+  launch_template {
+    id      = aws_launch_template.test_lc.id
+    version = aws_launch_template.test_lc.latest_version
   }
-
-  tag = {
-    key                 = "test"
-    value               = "tag"
-    propagate_at_launch = true
-  }
-
+  max_size            = 10
   metrics_granularity = "5min"
-  enabled_metrics     = ["test"]
+  min_size            = 1
+  name                = "test"
+  tag {
+    key                 = "cluster"
+    propagate_at_launch = true
+    value               = "test"
+  }
+  tag {
+    key                 = "test"
+    propagate_at_launch = true
+    value               = "tag"
+  }
+  vpc_zone_identifier = [aws_subnet.test-sg.id]
 }
 
-terraform = {
-  required_version = ">= 0.9.3"
+terraform {
+  required_version = ">= 0.15.0"
+  required_providers {
+    aws = {
+      "configuration_aliases" = [aws.files]
+      "source"                = "hashicorp/aws"
+      "version"               = ">= 4.0.0"
+    }
+  }
 }
 `,
 		},
 		{
 			Resource: &AutoscalingGroup{
-				Name:                   fi.String("test1"),
-				LaunchTemplate:         &LaunchTemplate{Name: fi.String("test_lt")},
-				MaxSize:                fi.Int64(10),
-				Metrics:                []string{"test"},
-				MinSize:                fi.Int64(5),
-				MixedInstanceOverrides: []string{"t2.medium", "t2.large"},
-				MixedOnDemandBase:      fi.Int64(4),
-				MixedOnDemandAboveBase: fi.Int64(30),
+				Name:                        fi.PtrTo("test1"),
+				LaunchTemplate:              &LaunchTemplate{Name: fi.PtrTo("test_lt")},
+				MaxSize:                     fi.PtrTo(int64(10)),
+				Metrics:                     []string{"test"},
+				MinSize:                     fi.PtrTo(int64(5)),
+				MixedInstanceOverrides:      []string{"t2.medium", "t2.large"},
+				MixedOnDemandBase:           fi.PtrTo(int64(4)),
+				MixedOnDemandAboveBase:      fi.PtrTo(int64(30)),
+				MixedSpotAllocationStrategy: fi.PtrTo("capacity-optimized"),
 				Subnets: []*Subnet{
 					{
-						Name: fi.String("test-sg"),
-						ID:   fi.String("sg-1111"),
+						Name: fi.PtrTo("test-sg"),
+						ID:   fi.PtrTo("sg-1111"),
 					},
 				},
 				Tags: map[string]string{
@@ -276,51 +285,51 @@ terraform = {
 }
 
 resource "aws_autoscaling_group" "test1" {
-  name     = "test1"
-  max_size = 10
-  min_size = 5
-
-  mixed_instances_policy = {
-    launch_template = {
-      launch_template_specification = {
-        launch_template_id = "${aws_launch_template.test_lt.id}"
-        version            = "${aws_launch_template.test_lt.latest_version}"
+  enabled_metrics = ["test"]
+  max_size        = 10
+  min_size        = 5
+  mixed_instances_policy {
+    instances_distribution {
+      on_demand_base_capacity                  = 4
+      on_demand_percentage_above_base_capacity = 30
+      spot_allocation_strategy                 = "capacity-optimized"
+    }
+    launch_template {
+      launch_template_specification {
+        launch_template_id = aws_launch_template.test_lt.id
+        version            = aws_launch_template.test_lt.latest_version
       }
-
-      override = {
+      override {
         instance_type = "t2.medium"
       }
-
-      override = {
+      override {
         instance_type = "t2.large"
       }
     }
-
-    instances_distribution = {
-      on_demand_base_capacity                  = 4
-      on_demand_percentage_above_base_capacity = 30
-    }
   }
-
-  vpc_zone_identifier = ["${aws_subnet.test-sg.id}"]
-
-  tag = {
+  name = "test1"
+  tag {
     key                 = "cluster"
+    propagate_at_launch = true
     value               = "test"
-    propagate_at_launch = true
   }
-
-  tag = {
+  tag {
     key                 = "test"
-    value               = "tag"
     propagate_at_launch = true
+    value               = "tag"
   }
-
-  enabled_metrics = ["test"]
+  vpc_zone_identifier = [aws_subnet.test-sg.id]
 }
 
-terraform = {
-  required_version = ">= 0.9.3"
+terraform {
+  required_version = ">= 0.15.0"
+  required_providers {
+    aws = {
+      "configuration_aliases" = [aws.files]
+      "source"                = "hashicorp/aws"
+      "version"               = ">= 4.0.0"
+    }
+  }
 }
 `,
 		},
@@ -329,87 +338,83 @@ terraform = {
 	doRenderTests(t, "RenderTerraform", cases)
 }
 
-func TestAutoscalingGroupCloudformationRender(t *testing.T) {
-	cases := []*renderTest{
+func TestTGsARNsChunks(t *testing.T) {
+	var tgsARNs []*string
+	for i := 0; i < 30; i++ {
+		tgsARNs = append(tgsARNs, fi.PtrTo(fmt.Sprintf("arn:aws:elasticloadbalancing:us-west-2:123456789012:targetgroup/my-targets/00000000000000%02d", i)))
+	}
+
+	tests := []struct {
+		tgsARNs   []*string
+		chunkSize int
+		expected  [][]*string
+	}{
 		{
-			Resource: &AutoscalingGroup{
-				Name:                   fi.String("test1"),
-				LaunchTemplate:         &LaunchTemplate{Name: fi.String("test_lt")},
-				MaxSize:                fi.Int64(10),
-				Metrics:                []string{"test"},
-				MinSize:                fi.Int64(5),
-				MixedInstanceOverrides: []string{"t2.medium", "t2.large"},
-				MixedOnDemandBase:      fi.Int64(4),
-				MixedOnDemandAboveBase: fi.Int64(30),
-				Subnets: []*Subnet{
-					{
-						Name: fi.String("test-sg"),
-						ID:   fi.String("sg-1111"),
-					},
-				},
-				Tags: map[string]string{
-					"test":    "tag",
-					"cluster": "test",
-				},
-			},
-			Expected: `{
-  "Resources": {
-    "AWSAutoScalingAutoScalingGrouptest1": {
-      "Type": "AWS::AutoScaling::AutoScalingGroup",
-      "Properties": {
-        "AutoScalingGroupName": "test1",
-        "MaxSize": 10,
-        "MinSize": 5,
-        "VPCZoneIdentifier": [
-          {
-            "Ref": "AWSEC2Subnettestsg"
-          }
-        ],
-        "Tags": [
-          {
-            "Key": "cluster",
-            "Value": "test",
-            "PropagateAtLaunch": true
-          },
-          {
-            "Key": "test",
-            "Value": "tag",
-            "PropagateAtLaunch": true
-          }
-        ],
-        "MetricsCollection": [
-          {
-            "Granularity": null,
-            "Metrics": [
-              "test"
-            ]
-          }
-        ],
-        "MixedInstancesPolicy": {
-          "LaunchTemplate": {
-            "LaunchTemplateSpecification": {
-              "LaunchTemplateName": "test_lt"
-            },
-            "Overrides": [
-              {
-                "InstanceType": "t2.medium"
-              },
-              {
-                "InstanceType": "t2.large"
-              }
-            ]
-          },
-          "InstancesDistribution": {
-            "OnDemandBaseCapacity": 4,
-            "OnDemandPercentageAboveBaseCapacity": 30
-          }
-        }
-      }
-    }
-  }
-}`,
+			tgsARNs:   tgsARNs[0:1],
+			chunkSize: 10,
+			expected:  [][]*string{tgsARNs[0:1]},
+		},
+		{
+			tgsARNs:   tgsARNs[0:5],
+			chunkSize: 10,
+			expected:  [][]*string{tgsARNs[0:5]},
+		},
+		{
+			tgsARNs:   tgsARNs[0:10],
+			chunkSize: 10,
+			expected:  [][]*string{tgsARNs[0:10]},
+		},
+		{
+			tgsARNs:   tgsARNs[0:11],
+			chunkSize: 10,
+			expected:  [][]*string{tgsARNs[0:10], tgsARNs[10:11]},
+		},
+		{
+			tgsARNs:   tgsARNs[0:15],
+			chunkSize: 10,
+			expected:  [][]*string{tgsARNs[0:10], tgsARNs[10:15]},
+		},
+		{
+			tgsARNs:   tgsARNs[0:20],
+			chunkSize: 10,
+			expected:  [][]*string{tgsARNs[0:10], tgsARNs[10:20]},
+		},
+		{
+			tgsARNs:   tgsARNs[0:21],
+			chunkSize: 10,
+			expected:  [][]*string{tgsARNs[0:10], tgsARNs[10:20], tgsARNs[20:21]},
+		},
+		{
+			tgsARNs:   tgsARNs[0:25],
+			chunkSize: 10,
+			expected:  [][]*string{tgsARNs[0:10], tgsARNs[10:20], tgsARNs[20:25]},
+		},
+		{
+			tgsARNs:   tgsARNs[0:30],
+			chunkSize: 10,
+			expected:  [][]*string{tgsARNs[0:10], tgsARNs[10:20], tgsARNs[20:30]},
 		},
 	}
 
-	doRenderTests(t, "RenderCloudformation", cases)
+	for i, test := range tests {
+		result := sliceChunks(test.tgsARNs, test.chunkSize)
+
+		expected, err := yaml.Marshal(test.expected)
+		if err != nil {
+			t.Errorf("case %d: failed to convert expected to yaml: %v", i, err)
+			continue
+		}
+
+		actual, err := yaml.Marshal(result)
+		if err != nil {
+			t.Errorf("case %d: failed to convert actual to yaml: %v", i, err)
+			continue
+		}
+
+		if string(expected) != string(actual) {
+			diffString := diff.FormatDiff(string(expected), string(actual))
+			t.Errorf("case %d: actual output differed from expected", i)
+			t.Logf("diff:\n%s\n", diffString)
+		}
+	}
 }

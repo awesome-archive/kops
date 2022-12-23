@@ -21,7 +21,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/MakeNowJust/heredoc"
+	"github.com/MakeNowJust/heredoc/v2"
 	v1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
@@ -54,7 +54,7 @@ func TestToVersionedYaml(t *testing.T) {
 			apiVersion: v1
 			kind: Pod
 			metadata:
-			  creationTimestamp: 2017-01-01T00:00:00Z
+			  creationTimestamp: "2017-01-01T00:00:00Z"
 			  name: hello
 			spec:
 			  containers:
@@ -79,5 +79,4 @@ func TestToVersionedYaml(t *testing.T) {
 			continue
 		}
 	}
-
 }

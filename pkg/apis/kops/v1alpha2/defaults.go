@@ -1,5 +1,5 @@
 /*
-Copyright 2016 The Kubernetes Authors.
+Copyright 2019 The Kubernetes Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -18,7 +18,7 @@ package v1alpha2
 
 import (
 	"k8s.io/apimachinery/pkg/runtime"
-	"k8s.io/klog"
+	"k8s.io/klog/v2"
 )
 
 func addDefaultingFuncs(scheme *runtime.Scheme) error {
@@ -26,45 +26,55 @@ func addDefaultingFuncs(scheme *runtime.Scheme) error {
 }
 
 func SetDefaults_ClusterSpec(obj *ClusterSpec) {
+	rebindIfEmpty := func(s *string, replacement string) bool {
+		if *s != "" {
+			return false
+		}
+		*s = replacement
+		return true
+	}
+
 	if obj.Topology == nil {
 		obj.Topology = &TopologySpec{}
 	}
 
-	if obj.Topology.Masters == "" {
-		obj.Topology.Masters = TopologyPublic
+	rebindIfEmpty(&obj.Topology.ControlPlane, TopologyPublic)
+
+	rebindIfEmpty(&obj.Topology.Nodes, TopologyPublic)
+
+	if obj.Topology.LegacyDNS == nil {
+		obj.Topology.LegacyDNS = &DNSSpec{}
 	}
 
-	if obj.Topology.Nodes == "" {
-		obj.Topology.Nodes = TopologyPublic
+	if obj.Topology.LegacyDNS.Type == "" {
+		obj.Topology.LegacyDNS.Type = DNSTypePublic
 	}
 
-	if obj.Topology.DNS == nil {
-		obj.Topology.DNS = &DNSSpec{}
-	}
-
-	if obj.Topology.DNS.Type == "" {
-		obj.Topology.DNS.Type = DNSTypePublic
-	}
-
-	if obj.API == nil {
-		obj.API = &AccessSpec{}
-	}
-
-	if obj.API.IsEmpty() {
-		switch obj.Topology.Masters {
-		case TopologyPublic:
-			obj.API.DNS = &DNSAccessSpec{}
-
-		case TopologyPrivate:
-			obj.API.LoadBalancer = &LoadBalancerAccessSpec{}
-
-		default:
-			klog.Infof("unknown master topology type: %q", obj.Topology.Masters)
+	if obj.LegacyCloudProvider != "openstack" {
+		if obj.LegacyAPI == nil {
+			obj.LegacyAPI = &APISpec{}
 		}
-	}
 
-	if obj.API.LoadBalancer != nil && obj.API.LoadBalancer.Type == "" {
-		obj.API.LoadBalancer.Type = LoadBalancerTypePublic
+		if obj.LegacyAPI.IsEmpty() {
+			switch obj.Topology.ControlPlane {
+			case TopologyPublic:
+				obj.LegacyAPI.DNS = &DNSAccessSpec{}
+
+			case TopologyPrivate:
+				obj.LegacyAPI.LoadBalancer = &LoadBalancerAccessSpec{}
+
+			default:
+				klog.Infof("unknown master topology type: %q", obj.Topology.ControlPlane)
+			}
+		}
+
+		if obj.LegacyAPI.LoadBalancer != nil && obj.LegacyAPI.LoadBalancer.Type == "" {
+			obj.LegacyAPI.LoadBalancer.Type = LoadBalancerTypePublic
+		}
+
+		if obj.LegacyAPI.LoadBalancer != nil && obj.LegacyAPI.LoadBalancer.Class == "" && obj.LegacyCloudProvider == "aws" {
+			obj.LegacyAPI.LoadBalancer.Class = LoadBalancerClassClassic
+		}
 	}
 
 	if obj.Authorization == nil {
@@ -75,18 +85,11 @@ func SetDefaults_ClusterSpec(obj *ClusterSpec) {
 		obj.Authorization.AlwaysAllow = &AlwaysAllowAuthorizationSpec{}
 	}
 
-	if obj.IAM == nil {
-		obj.IAM = &IAMSpec{
-			Legacy: true,
-		}
-	}
-
-	if obj.Networking != nil {
-		if obj.Networking.Flannel != nil {
-			if obj.Networking.Flannel.Backend == "" {
-				// Populate with legacy default value; new clusters will be created with vxlan by create cluster
-				obj.Networking.Flannel.Backend = "udp"
-			}
+	if obj.LegacyNetworking != nil {
+		if obj.LegacyNetworking.Flannel != nil {
+			// Populate with legacy default value; new clusters will be created with "vxlan" by
+			// "create cluster."
+			rebindIfEmpty(&obj.LegacyNetworking.Flannel.Backend, "udp")
 		}
 	}
 }

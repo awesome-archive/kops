@@ -1,5 +1,5 @@
 /*
-Copyright 2016 The Kubernetes Authors.
+Copyright 2019 The Kubernetes Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -21,7 +21,7 @@ import (
 	"net"
 	"sort"
 
-	"k8s.io/klog"
+	"k8s.io/klog/v2"
 	"k8s.io/kops/pkg/apis/kops"
 	"k8s.io/kops/pkg/util/subnet"
 	"k8s.io/kops/upup/pkg/fi"
@@ -34,14 +34,16 @@ type ByZone []*kops.ClusterSubnetSpec
 func (a ByZone) Len() int {
 	return len(a)
 }
+
 func (a ByZone) Swap(i, j int) {
 	a[i], a[j] = a[j], a[i]
 }
+
 func (a ByZone) Less(i, j int) bool {
 	return a[i].Zone < a[j].Zone
 }
 
-func assignCIDRsToSubnets(c *kops.Cluster) error {
+func assignCIDRsToSubnets(c *kops.Cluster, cloud fi.Cloud) error {
 	// TODO: We probably could query for the existing subnets & allocate appropriately
 	// for now we'll require users to set CIDRs themselves
 
@@ -50,42 +52,38 @@ func assignCIDRsToSubnets(c *kops.Cluster) error {
 		return nil
 	}
 
-	if c.Spec.NetworkID != "" {
-		cloud, err := BuildCloud(c)
-		if err != nil {
-			return err
-		}
+	if c.Spec.Networking.NetworkID != "" {
 
-		vpcInfo, err := cloud.FindVPCInfo(c.Spec.NetworkID)
+		vpcInfo, err := cloud.FindVPCInfo(c.Spec.Networking.NetworkID)
 		if err != nil {
 			return err
 		}
 		if vpcInfo == nil {
-			return fmt.Errorf("VPC %q not found", c.Spec.NetworkID)
+			return fmt.Errorf("VPC %q not found", c.Spec.Networking.NetworkID)
 		}
 
 		subnetByID := make(map[string]*fi.SubnetInfo)
 		for _, subnetInfo := range vpcInfo.Subnets {
 			subnetByID[subnetInfo.ID] = subnetInfo
 		}
-		for i := range c.Spec.Subnets {
-			subnet := &c.Spec.Subnets[i]
-			if subnet.ProviderID != "" {
-				cloudSubnet := subnetByID[subnet.ProviderID]
+		for i := range c.Spec.Networking.Subnets {
+			subnet := &c.Spec.Networking.Subnets[i]
+			if subnet.ID != "" {
+				cloudSubnet := subnetByID[subnet.ID]
 				if cloudSubnet == nil {
-					return fmt.Errorf("Subnet %q not found in VPC %q", subnet.ProviderID, c.Spec.NetworkID)
+					return fmt.Errorf("Subnet %q not found in VPC %q", subnet.ID, c.Spec.Networking.NetworkID)
 				}
 				if subnet.CIDR == "" {
 					subnet.CIDR = cloudSubnet.CIDR
 					if subnet.CIDR == "" {
-						return fmt.Errorf("Subnet %q did not have CIDR", subnet.ProviderID)
+						return fmt.Errorf("Subnet %q did not have CIDR", subnet.ID)
 					}
 				} else if subnet.CIDR != cloudSubnet.CIDR {
-					return fmt.Errorf("Subnet %q has configured CIDR %q, but the actual CIDR found was %q", subnet.ProviderID, subnet.CIDR, cloudSubnet.CIDR)
+					return fmt.Errorf("Subnet %q has configured CIDR %q, but the actual CIDR found was %q", subnet.ID, subnet.CIDR, cloudSubnet.CIDR)
 				}
 
 				if subnet.Zone != cloudSubnet.Zone {
-					return fmt.Errorf("Subnet %q has configured Zone %q, but the actual Zone found was %q", subnet.ProviderID, subnet.Zone, cloudSubnet.Zone)
+					return fmt.Errorf("Subnet %q has configured Zone %q, but the actual Zone found was %q", subnet.ID, subnet.Zone, cloudSubnet.Zone)
 				}
 
 			}
@@ -97,9 +95,9 @@ func assignCIDRsToSubnets(c *kops.Cluster) error {
 		return nil
 	}
 
-	_, cidr, err := net.ParseCIDR(c.Spec.NetworkCIDR)
+	_, cidr, err := net.ParseCIDR(c.Spec.Networking.NetworkCIDR)
 	if err != nil {
-		return fmt.Errorf("Invalid NetworkCIDR: %q", c.Spec.NetworkCIDR)
+		return fmt.Errorf("Invalid NetworkCIDR: %q", c.Spec.Networking.NetworkCIDR)
 	}
 
 	// We split the network range into 8 subnets
@@ -118,10 +116,10 @@ func assignCIDRsToSubnets(c *kops.Cluster) error {
 	var littleSubnets []*kops.ClusterSubnetSpec
 
 	var reserved []*net.IPNet
-	for i := range c.Spec.Subnets {
-		subnet := &c.Spec.Subnets[i]
+	for i := range c.Spec.Networking.Subnets {
+		subnet := &c.Spec.Networking.Subnets[i]
 		switch subnet.Type {
-		case kops.SubnetTypePublic, kops.SubnetTypePrivate:
+		case kops.SubnetTypeDualStack, kops.SubnetTypePublic, kops.SubnetTypePrivate:
 			bigSubnets = append(bigSubnets, subnet)
 
 		case kops.SubnetTypeUtility:
@@ -176,6 +174,9 @@ func assignCIDRsToSubnets(c *kops.Cluster) error {
 		if subnet.CIDR != "" {
 			continue
 		}
+		if subnet.IPv6CIDR != "" && subnet.Type == kops.SubnetTypePrivate {
+			continue
+		}
 
 		if len(bigCIDRs) == 0 {
 			return fmt.Errorf("insufficient (big) CIDRs remaining for automatic CIDR allocation to subnet %q", subnet.Name)
@@ -205,8 +206,8 @@ func assignCIDRsToSubnets(c *kops.Cluster) error {
 
 // allSubnetsHaveCIDRs returns true iff each subnet in the cluster has a non-empty CIDR
 func allSubnetsHaveCIDRs(c *kops.Cluster) bool {
-	for i := range c.Spec.Subnets {
-		subnet := &c.Spec.Subnets[i]
+	for i := range c.Spec.Networking.Subnets {
+		subnet := &c.Spec.Networking.Subnets[i]
 		if subnet.CIDR == "" {
 			return false
 		}

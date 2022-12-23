@@ -1,5 +1,5 @@
 /*
-Copyright 2016 The Kubernetes Authors.
+Copyright 2019 The Kubernetes Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -20,14 +20,15 @@ import (
 	"fmt"
 	"os"
 
-	"k8s.io/klog"
+	"k8s.io/klog/v2"
 	"k8s.io/kops/channels/pkg/cmd"
+	"k8s.io/kops/cmd/kops/util"
 )
 
 func main() {
 	klog.InitFlags(nil)
 
-	f := &cmd.DefaultFactory{}
+	f := util.NewFactory(nil)
 	if err := cmd.Execute(f, os.Stdout); err != nil {
 		fmt.Fprintf(os.Stderr, "\n%v\n", err)
 		os.Exit(1)

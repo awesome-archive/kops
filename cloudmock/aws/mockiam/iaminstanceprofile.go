@@ -1,5 +1,5 @@
 /*
-Copyright 2018 The Kubernetes Authors.
+Copyright 2019 The Kubernetes Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -18,12 +18,13 @@ package mockiam
 
 import (
 	"fmt"
+	"strings"
 
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/aws/awserr"
 	"github.com/aws/aws-sdk-go/aws/request"
 	"github.com/aws/aws-sdk-go/service/iam"
-	"k8s.io/klog"
+	"k8s.io/klog/v2"
 )
 
 func (m *MockIAM) GetInstanceProfile(request *iam.GetInstanceProfileInput) (*iam.GetInstanceProfileOutput, error) {
@@ -31,17 +32,19 @@ func (m *MockIAM) GetInstanceProfile(request *iam.GetInstanceProfileInput) (*iam
 	defer m.mutex.Unlock()
 
 	ip := m.InstanceProfiles[aws.StringValue(request.InstanceProfileName)]
-	if ip == nil {
-		return nil, awserr.New("NoSuchEntity", "No such entity", nil)
+	if ip == nil || strings.Contains(aws.StringValue(ip.InstanceProfileName), "__no_entity__") {
+		return nil, awserr.New(iam.ErrCodeNoSuchEntityException, "No such entity", nil)
 	}
 	response := &iam.GetInstanceProfileOutput{
 		InstanceProfile: ip,
 	}
 	return response, nil
 }
+
 func (m *MockIAM) GetInstanceProfileWithContext(aws.Context, *iam.GetInstanceProfileInput, ...request.Option) (*iam.GetInstanceProfileOutput, error) {
 	panic("Not implemented")
 }
+
 func (m *MockIAM) GetInstanceProfileRequest(*iam.GetInstanceProfileInput) (*request.Request, *iam.GetInstanceProfileOutput) {
 	panic("Not implemented")
 }
@@ -57,6 +60,7 @@ func (m *MockIAM) CreateInstanceProfile(request *iam.CreateInstanceProfileInput)
 		// Arn:                 request.Arn,
 		// InstanceProfileId:   request.InstanceProfileId,
 		Path: request.Path,
+		Tags: request.Tags,
 		// Roles:               request.Roles,
 	}
 
@@ -80,12 +84,43 @@ func (m *MockIAM) CreateInstanceProfile(request *iam.CreateInstanceProfileInput)
 	copy := *p
 	return &iam.CreateInstanceProfileOutput{InstanceProfile: &copy}, nil
 }
+
 func (m *MockIAM) CreateInstanceProfileWithContext(aws.Context, *iam.CreateInstanceProfileInput, ...request.Option) (*iam.CreateInstanceProfileOutput, error) {
 	panic("Not implemented")
 }
+
 func (m *MockIAM) CreateInstanceProfileRequest(*iam.CreateInstanceProfileInput) (*request.Request, *iam.CreateInstanceProfileOutput) {
 	panic("Not implemented")
 }
+
+func (m *MockIAM) TagInstanceProfile(request *iam.TagInstanceProfileInput) (*iam.TagInstanceProfileOutput, error) {
+	m.mutex.Lock()
+	defer m.mutex.Unlock()
+
+	klog.Infof("CreateInstanceProfile: %v", request)
+
+	ip := m.InstanceProfiles[aws.StringValue(request.InstanceProfileName)]
+	if ip == nil {
+		return nil, fmt.Errorf("InstanceProfile not found")
+	}
+
+	for _, tag := range request.Tags {
+		key := *tag.Key
+		overwritten := false
+		for _, existingTag := range ip.Tags {
+			if *existingTag.Key == key {
+				existingTag.Value = tag.Value
+				overwritten = true
+				break
+			}
+		}
+		if !overwritten {
+			ip.Tags = append(ip.Tags, tag)
+		}
+	}
+	return &iam.TagInstanceProfileOutput{}, nil
+}
+
 func (m *MockIAM) AddRoleToInstanceProfile(request *iam.AddRoleToInstanceProfileInput) (*iam.AddRoleToInstanceProfileOutput, error) {
 	m.mutex.Lock()
 	defer m.mutex.Unlock()
@@ -146,6 +181,7 @@ func (m *MockIAM) RemoveRoleFromInstanceProfile(request *iam.RemoveRoleFromInsta
 func (m *MockIAM) RemoveRoleFromInstanceProfileWithContext(aws.Context, *iam.RemoveRoleFromInstanceProfileInput, ...request.Option) (*iam.RemoveRoleFromInstanceProfileOutput, error) {
 	panic("Not implemented")
 }
+
 func (m *MockIAM) RemoveRoleFromInstanceProfileRequest(*iam.RemoveRoleFromInstanceProfileInput) (*request.Request, *iam.RemoveRoleFromInstanceProfileOutput) {
 	panic("Not implemented")
 }
@@ -217,6 +253,7 @@ func (m *MockIAM) DeleteInstanceProfile(request *iam.DeleteInstanceProfileInput)
 func (m *MockIAM) DeleteInstanceProfileWithContext(aws.Context, *iam.DeleteInstanceProfileInput, ...request.Option) (*iam.DeleteInstanceProfileOutput, error) {
 	panic("Not implemented")
 }
+
 func (m *MockIAM) DeleteInstanceProfileRequest(*iam.DeleteInstanceProfileInput) (*request.Request, *iam.DeleteInstanceProfileOutput) {
 	panic("Not implemented")
 }

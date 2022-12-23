@@ -1,0 +1,17 @@
+metadata:
+  creationTimestamp: null
+  name: minimal.example.com
+spec:
+  api:
+    dns: {}
+  authorization:
+    alwaysAllow: {}
+  cloudProvider: {}
+  kubeScheduler:
+    maxPersistentVolumes: 20
+  kubernetesVersion: v1.24.0
+  networking:
+    topology:
+      controlPlane: public
+      dns: Public
+      nodes: public

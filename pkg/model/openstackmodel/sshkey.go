@@ -1,5 +1,5 @@
 /*
-Copyright 2016 The Kubernetes Authors.
+Copyright 2019 The Kubernetes Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -24,12 +24,12 @@ import (
 // SSHKeyModelBuilder configures SSH objects
 type SSHKeyModelBuilder struct {
 	*OpenstackModelContext
-	Lifecycle *fi.Lifecycle
+	Lifecycle fi.Lifecycle
 }
 
-var _ fi.ModelBuilder = &SSHKeyModelBuilder{}
+var _ fi.CloudupModelBuilder = &SSHKeyModelBuilder{}
 
-func (b *SSHKeyModelBuilder) Build(c *fi.ModelBuilderContext) error {
+func (b *SSHKeyModelBuilder) Build(c *fi.CloudupModelBuilderContext) error {
 	name, err := b.SSHKeyName()
 	if err != nil {
 		return err
@@ -37,7 +37,7 @@ func (b *SSHKeyModelBuilder) Build(c *fi.ModelBuilderContext) error {
 	t := &openstacktasks.SSHKey{
 		Name:      s(name),
 		Lifecycle: b.Lifecycle,
-		PublicKey: fi.WrapResource(fi.NewStringResource(string(b.SSHPublicKeys[0]))),
+		PublicKey: fi.NewStringResource(string(b.SSHPublicKeys[0])),
 	}
 	c.AddTask(t)
 

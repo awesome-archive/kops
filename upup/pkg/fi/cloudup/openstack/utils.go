@@ -1,5 +1,5 @@
 /*
-Copyright 2018 The Kubernetes Authors.
+Copyright 2019 The Kubernetes Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -44,19 +44,18 @@ func (s flavorList) Swap(i, j int) {
 func (s flavorList) Less(i, j int) bool {
 	if s[i].VCPUs < s[j].VCPUs {
 		return true
-	} else {
-		if s[i].VCPUs > s[j].VCPUs {
-			return false
-		}
+	}
+	if s[i].VCPUs > s[j].VCPUs {
+		return false
 	}
 	return s[i].RAM < s[j].RAM
 }
 
 func (c *openstackCloud) DefaultInstanceType(cluster *kops.Cluster, ig *kops.InstanceGroup) (string, error) {
-	type flavorInfo struct {
-		memory int
-		cpu    int
-	}
+	return defaultInstanceType(c, cluster, ig)
+}
+
+func defaultInstanceType(c OpenstackCloud, cluster *kops.Cluster, ig *kops.InstanceGroup) (string, error) {
 	flavorPage, err := flavors.ListDetail(c.ComputeClient(), flavors.ListOpts{
 		MinRAM: 1024,
 	}).AllPages()
@@ -72,7 +71,7 @@ func (c *openstackCloud) DefaultInstanceType(cluster *kops.Cluster, ig *kops.Ins
 
 	var candidates flavorList
 	switch ig.Spec.Role {
-	case kops.InstanceGroupRoleMaster:
+	case kops.InstanceGroupRoleControlPlane:
 		// Requirements based on awsCloudImplementation.DefaultInstanceType
 		for _, flavor := range fList {
 			if flavor.RAM >= 4096 && flavor.VCPUs >= 1 {
@@ -105,7 +104,6 @@ func (c *openstackCloud) DefaultInstanceType(cluster *kops.Cluster, ig *kops.Ins
 
 func GetServerFixedIP(server *servers.Server, interfaceName string) (poolAddress string, err error) {
 	if localAddr, ok := server.Addresses[interfaceName]; ok {
-
 		if localAddresses, ok := localAddr.([]interface{}); ok {
 			for _, addr := range localAddresses {
 				addrMap := addr.(map[string]interface{})

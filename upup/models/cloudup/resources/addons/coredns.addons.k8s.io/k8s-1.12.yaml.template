@@ -1,3 +1,5 @@
+# Source: https://raw.githubusercontent.com/coredns/deployment/master/kubernetes/coredns.yaml.sed
+---
 apiVersion: v1
 kind: ServiceAccount
 metadata:
@@ -15,22 +17,23 @@ metadata:
     k8s-addon: coredns.addons.k8s.io
   name: system:coredns
 rules:
-- apiGroups:
-  - ""
-  resources:
-  - endpoints
-  - services
-  - pods
-  - namespaces
-  verbs:
-  - list
-  - watch
-- apiGroups:
-  - ""
-  resources:
-  - nodes
-  verbs:
-  - get
+  - apiGroups:
+    - ""
+    resources:
+    - endpoints
+    - services
+    - pods
+    - namespaces
+    verbs:
+    - list
+    - watch
+  - apiGroups:
+    - discovery.k8s.io
+    resources:
+    - endpointslices
+    verbs:
+    - list
+    - watch
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRoleBinding
@@ -59,21 +62,39 @@ metadata:
       addonmanager.kubernetes.io/mode: EnsureExists
 data:
   Corefile: |
+  {{- if KubeDNS.ExternalCoreFile }}
+{{ KubeDNS.ExternalCoreFile | indent 4 }}
+  {{- else }}
     .:53 {
         errors
-        health
+        health {
+          lameduck 5s
+        }
+        ready
         kubernetes {{ KubeDNS.Domain }}. in-addr.arpa ip6.arpa {
           pods insecure
-          upstream
           fallthrough in-addr.arpa ip6.arpa
+          ttl 30
         }
+    {{- if GossipDomains }}
+        hosts /rootfs/etc/hosts {{ join " " GossipDomains }} {
+          ttl 30
+          fallthrough
+        }
+    {{- end }}
         prometheus :9153
-        forward . /etc/resolv.conf
-        loop
+        forward . {{ or (join " " KubeDNS.UpstreamNameservers) "/etc/resolv.conf" }} {
+          max_concurrent 1000
+        }
         cache 30
-        loadbalance
+        loop
         reload
+        loadbalance
+        {{- if IsIPv6Only }}
+        dns64
+        {{- end }}
     }
+  {{- end }}
 ---
 apiVersion: apps/v1
 kind: Deployment
@@ -82,14 +103,18 @@ metadata:
   namespace: kube-system
   labels:
     k8s-app: kube-dns
+    kubernetes.io/name: "CoreDNS"
     k8s-addon: coredns.addons.k8s.io
     kubernetes.io/cluster-service: "true"
 spec:
-  replicas: 2
+  # replicas: not specified here:
+  # 1. Default is 1.
+  # 2. Will be tuned in real time if DNS horizontal auto-scaling is turned on.
   strategy:
     type: RollingUpdate
     rollingUpdate:
       maxUnavailable: 1
+      maxSurge: 10%
   selector:
     matchLabels:
       k8s-app: kube-dns
@@ -101,13 +126,35 @@ spec:
       priorityClassName: system-cluster-critical
       serviceAccountName: coredns
       tolerations:
+        {{- if KubeDNS.Tolerations }}
+{{ ToYAML .KubeDNS.Tolerations | indent 8 }}
+        {{- else }}
         - key: "CriticalAddonsOnly"
           operator: "Exists"
+        {{- end }}
       nodeSelector:
-          beta.kubernetes.io/os: linux
+        kubernetes.io/os: linux
+{{- if .KubeDNS.Affinity }}
+      affinity:
+{{ ToYAML .KubeDNS.Affinity | indent 8 }}
+{{- end }}
+      topologySpreadConstraints:
+      - maxSkew: 1
+        topologyKey: "topology.kubernetes.io/zone"
+        whenUnsatisfiable: ScheduleAnyway
+        labelSelector:
+          matchLabels:
+            k8s-app: kube-dns
+      - maxSkew: 1
+        topologyKey: "kubernetes.io/hostname"
+        # Normally we use DoNotSchedule here, but because CoreDNS autoscales, we cannot guarantee this constraint can be satisfied
+        whenUnsatisfiable: ScheduleAnyway
+        labelSelector:
+          matchLabels:
+            k8s-app: kube-dns
       containers:
       - name: coredns
-        image: k8s.gcr.io/coredns:1.3.1
+        image: {{ if KubeDNS.CoreDNSImage }}{{ KubeDNS.CoreDNSImage }}{{ else }}registry.k8s.io/coredns/coredns:v1.10.0{{ end }}
         imagePullPolicy: IfNotPresent
         resources:
           limits:
@@ -120,6 +167,11 @@ spec:
         - name: config-volume
           mountPath: /etc/coredns
           readOnly: true
+{{- if GossipDomains }}
+        - name: etc-hosts
+          mountPath: /rootfs/etc/hosts
+          readOnly: true
+{{- end }}
         ports:
         - containerPort: 53
           name: dns
@@ -149,17 +201,20 @@ spec:
           failureThreshold: 5
         readinessProbe:
           httpGet:
-            path: /health
-            port: 8080
+            path: /ready
+            port: 8181
             scheme: HTTP
       dnsPolicy: Default
       volumes:
         - name: config-volume
           configMap:
             name: coredns
-            items:
-            - key: Corefile
-              path: Corefile
+{{- if GossipDomains }}
+        - name: etc-hosts
+          hostPath:
+            path: /etc/hosts
+            type: File
+{{- end }}
 ---
 apiVersion: v1
 kind: Service
@@ -174,6 +229,9 @@ metadata:
     k8s-app: kube-dns
     kubernetes.io/cluster-service: "true"
     kubernetes.io/name: "CoreDNS"
+  # Without this resourceVersion value, an update of the Service between versions will yield:
+  #   Service "kube-dns" is invalid: metadata.resourceVersion: Invalid value: "": must be specified for an update
+  resourceVersion: "0"
 spec:
   selector:
     k8s-app: kube-dns
@@ -188,3 +246,119 @@ spec:
   - name: metrics
     port: 9153
     protocol: TCP
+---
+{{ if IsKubernetesGTE "1.23" }}
+apiVersion: policy/v1
+{{ else }}
+apiVersion: policy/v1beta1
+{{ end }}
+kind: PodDisruptionBudget
+metadata:
+  name: kube-dns
+  namespace: kube-system
+spec:
+  selector:
+    matchLabels:
+      k8s-app: kube-dns
+  maxUnavailable: 50%
+---
+
+# CoreDNS Autoscaler
+# Source: https://github.com/kubernetes-sigs/cluster-proportional-autoscaler/tree/master/
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: coredns-autoscaler
+  namespace: kube-system
+  labels:
+    k8s-addon: coredns.addons.k8s.io
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  labels:
+    k8s-addon: coredns.addons.k8s.io
+  name: coredns-autoscaler
+rules:
+  - apiGroups: [""]
+    resources: ["nodes"]
+    verbs: ["list","watch"]
+  - apiGroups: [""]
+    resources: ["replicationcontrollers/scale"]
+    verbs: ["get", "update"]
+  - apiGroups: ["extensions", "apps"]
+    resources: ["deployments/scale", "replicasets/scale"]
+    verbs: ["get", "update"]
+# Remove the configmaps rule once below issue is fixed:
+# kubernetes-incubator/cluster-proportional-autoscaler#16
+  - apiGroups: [""]
+    resources: ["configmaps"]
+    verbs: ["get", "create"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  labels:
+    k8s-addon: coredns.addons.k8s.io
+  name: coredns-autoscaler
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: coredns-autoscaler
+subjects:
+- kind: ServiceAccount
+  name: coredns-autoscaler
+  namespace: kube-system
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: coredns-autoscaler
+  namespace: kube-system
+  labels:
+    k8s-addon: coredns.addons.k8s.io
+    k8s-app: coredns-autoscaler
+    kubernetes.io/cluster-service: "true"
+spec:
+  selector:
+    matchLabels:
+      k8s-app: coredns-autoscaler
+  template:
+    metadata:
+      labels:
+        k8s-app: coredns-autoscaler
+    spec:
+      containers:
+      - name: autoscaler
+        image: {{ if KubeDNS.CPAImage }}{{ KubeDNS.CPAImage }}{{ else }}registry.k8s.io/cpa/cluster-proportional-autoscaler:1.8.6{{ end }}
+        resources:
+            requests:
+                cpu: "20m"
+                memory: "10Mi"
+        command:
+          - /cluster-proportional-autoscaler
+          - --namespace=kube-system
+          - --configmap=coredns-autoscaler
+          - --target=Deployment/coredns
+          # When cluster is using large nodes(with more cores), "coresPerReplica" should dominate.
+          # If using small nodes, "nodesPerReplica" should dominate.
+          - --default-params={"linear":{"coresPerReplica":256,"nodesPerReplica":16,"preventSinglePointFailure":true}}
+          - --logtostderr=true
+          - --v=2
+      priorityClassName: system-cluster-critical
+      tolerations:
+        {{- if KubeDNS.Tolerations }}
+{{ ToYAML .KubeDNS.Tolerations | indent 8 }}
+        {{- else }}
+        - key: "CriticalAddonsOnly"
+          operator: "Exists"
+        {{- end }}
+      serviceAccountName: coredns-autoscaler
+      nodeSelector:
+        kubernetes.io/os: linux
+{{- if .KubeDNS.Affinity }}
+      affinity:
+{{ ToYAML .KubeDNS.Affinity | indent 8 }}
+{{- end }}
+---

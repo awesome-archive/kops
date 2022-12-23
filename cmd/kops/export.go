@@ -1,5 +1,5 @@
 /*
-Copyright 2016 The Kubernetes Authors.
+Copyright 2019 The Kubernetes Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -21,36 +21,19 @@ import (
 
 	"github.com/spf13/cobra"
 	"k8s.io/kops/cmd/kops/util"
-	"k8s.io/kubernetes/pkg/kubectl/util/i18n"
-	"k8s.io/kubernetes/pkg/kubectl/util/templates"
+	"k8s.io/kubectl/pkg/util/i18n"
 )
 
-var (
-	exportLong = templates.LongDesc(i18n.T(`
-	Export configurations from a cluster.`))
-
-	exportExample = templates.Examples(i18n.T(`
-	# export a kubecfg file
-	kops export kubecfg kubernetes-cluster.example.com
-		`))
-
-	exportShort = i18n.T(`Export configuration.`)
-)
-
-type ExportOptions struct {
-}
+var exportShort = i18n.T(`Export configuration.`)
 
 func NewCmdExport(f *util.Factory, out io.Writer) *cobra.Command {
-
 	cmd := &cobra.Command{
-		Use:     "export",
-		Short:   exportShort,
-		Long:    exportLong,
-		Example: exportExample,
+		Use:   "export",
+		Short: exportShort,
 	}
 
 	// create subcommands
-	cmd.AddCommand(NewCmdExportKubecfg(f, out))
+	cmd.AddCommand(NewCmdExportKubeconfig(f, out))
 
 	return cmd
 }

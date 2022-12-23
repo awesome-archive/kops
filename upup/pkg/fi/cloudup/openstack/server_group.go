@@ -19,10 +19,12 @@ package openstack
 import (
 	"fmt"
 
+	"github.com/gophercloud/gophercloud/openstack/compute/v2/servers"
+
 	"github.com/gophercloud/gophercloud/openstack/compute/v2/extensions/servergroups"
 	v1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/util/wait"
-	"k8s.io/klog"
+	"k8s.io/klog/v2"
 	"k8s.io/kops/pkg/apis/kops"
 	"k8s.io/kops/pkg/cloudinstances"
 	"k8s.io/kops/upup/pkg/fi"
@@ -30,10 +32,14 @@ import (
 )
 
 func (c *openstackCloud) CreateServerGroup(opt servergroups.CreateOptsBuilder) (*servergroups.ServerGroup, error) {
+	return createServerGroup(c, opt)
+}
+
+func createServerGroup(c OpenstackCloud, opt servergroups.CreateOptsBuilder) (*servergroups.ServerGroup, error) {
 	var i *servergroups.ServerGroup
 
 	done, err := vfs.RetryWithBackoff(writeBackoff, func() (bool, error) {
-		v, err := servergroups.Create(c.novaClient, opt).Extract()
+		v, err := servergroups.Create(c.ComputeClient(), opt).Extract()
 		if err != nil {
 			return false, fmt.Errorf("error creating server group: %v", err)
 		}
@@ -49,11 +55,15 @@ func (c *openstackCloud) CreateServerGroup(opt servergroups.CreateOptsBuilder) (
 	}
 }
 
-func (c *openstackCloud) ListServerGroups() ([]servergroups.ServerGroup, error) {
+func (c *openstackCloud) ListServerGroups(opts servergroups.ListOptsBuilder) ([]servergroups.ServerGroup, error) {
+	return listServerGroups(c, opts)
+}
+
+func listServerGroups(c OpenstackCloud, opts servergroups.ListOptsBuilder) ([]servergroups.ServerGroup, error) {
 	var sgs []servergroups.ServerGroup
 
 	done, err := vfs.RetryWithBackoff(readBackoff, func() (bool, error) {
-		allPages, err := servergroups.List(c.novaClient).AllPages()
+		allPages, err := servergroups.List(c.ComputeClient(), opts).AllPages()
 		if err != nil {
 			return false, fmt.Errorf("error listing server groups: %v", err)
 		}
@@ -81,7 +91,7 @@ func matchInstanceGroup(name string, clusterName string, instancegroups []*kops.
 		var groupName string
 
 		switch g.Spec.Role {
-		case kops.InstanceGroupRoleMaster, kops.InstanceGroupRoleNode, kops.InstanceGroupRoleBastion:
+		case kops.InstanceGroupRoleControlPlane, kops.InstanceGroupRoleNode, kops.InstanceGroupRoleBastion:
 			groupName = clusterName + "-" + g.ObjectMeta.Name
 		default:
 			klog.Warningf("Ignoring InstanceGroup of unknown role %q", g.Spec.Role)
@@ -99,14 +109,15 @@ func matchInstanceGroup(name string, clusterName string, instancegroups []*kops.
 	return instancegroup, nil
 }
 
-func (c *openstackCloud) osBuildCloudInstanceGroup(ig *kops.InstanceGroup, g *servergroups.ServerGroup, nodeMap map[string]*v1.Node) (*cloudinstances.CloudInstanceGroup, error) {
+func osBuildCloudInstanceGroup(c OpenstackCloud, cluster *kops.Cluster, ig *kops.InstanceGroup, g servergroups.ServerGroup, nodeMap map[string]*v1.Node) (*cloudinstances.CloudInstanceGroup, error) {
 	newLaunchConfigName := g.Name
 	cg := &cloudinstances.CloudInstanceGroup{
 		HumanName:     newLaunchConfigName,
 		InstanceGroup: ig,
-		MinSize:       int(fi.Int32Value(ig.Spec.MinSize)),
-		MaxSize:       int(fi.Int32Value(ig.Spec.MaxSize)),
-		Raw:           g,
+		MinSize:       int(fi.ValueOf(ig.Spec.MinSize)),
+		TargetSize:    int(fi.ValueOf(ig.Spec.MinSize)), // TODO: Retrieve the target size from OpenStack?
+		MaxSize:       int(fi.ValueOf(ig.Spec.MaxSize)),
+		Raw:           &g,
 	}
 	for _, i := range g.Members {
 		instanceId := i
@@ -114,22 +125,57 @@ func (c *openstackCloud) osBuildCloudInstanceGroup(ig *kops.InstanceGroup, g *se
 			klog.Warningf("ignoring instance with no instance id: %s", i)
 			continue
 		}
-		// TODO: how we should implement this, OS does not have launchconfigs? Should we somehow use tags in servergroups and in instances
-		err := cg.NewCloudInstanceGroupMember(instanceId, newLaunchConfigName, newLaunchConfigName+"-updatealways", nodeMap)
+		server, err := servers.Get(c.ComputeClient(), instanceId).Extract()
+		if err != nil {
+			return nil, fmt.Errorf("Failed to get instance group member: %v", err)
+		}
+		igObservedGeneration := server.Metadata[INSTANCE_GROUP_GENERATION]
+		clusterObservedGeneration := server.Metadata[CLUSTER_GENERATION]
+		observedName := fmt.Sprintf("%s-%s", clusterObservedGeneration, igObservedGeneration)
+		generationName := fmt.Sprintf("%d-%d", cluster.GetGeneration(), ig.Generation)
+
+		status := cloudinstances.CloudInstanceStatusUpToDate
+		if generationName != observedName {
+			status = cloudinstances.CloudInstanceStatusNeedsUpdate
+		}
+		cm, err := cg.NewCloudInstance(instanceId, status, nodeMap[instanceId])
 		if err != nil {
 			return nil, fmt.Errorf("error creating cloud instance group member: %v", err)
 		}
+
+		if server.Flavor["original_name"] != nil {
+			cm.MachineType = server.Flavor["original_name"].(string)
+		}
+
+		ip, err := GetServerFixedIP(server, server.Metadata[TagKopsNetwork])
+		if err != nil {
+			return nil, fmt.Errorf("error creating cloud instance group member: %v", err)
+		}
+
+		cm.PrivateIP = ip
+
+		cm.Roles = []string{server.Metadata["KopsRole"]}
+
+		cm.State = cloudinstances.State(server.Status)
+
 	}
 	return cg, nil
 }
 
 func (c *openstackCloud) DeleteServerGroup(groupID string) error {
-	done, err := vfs.RetryWithBackoff(writeBackoff, func() (bool, error) {
-		err := servergroups.Delete(c.novaClient, groupID).ExtractErr()
+	return deleteServerGroup(c, groupID)
+}
+
+func deleteServerGroup(c OpenstackCloud, groupID string) error {
+	done, err := vfs.RetryWithBackoff(deleteBackoff, func() (bool, error) {
+		err := servergroups.Delete(c.ComputeClient(), groupID).ExtractErr()
 		if err != nil && !isNotFound(err) {
 			return false, fmt.Errorf("error deleting server group: %v", err)
 		}
-		return true, nil
+		if isNotFound(err) {
+			return true, nil
+		}
+		return false, nil
 	})
 	if err != nil {
 		return err

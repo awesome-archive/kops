@@ -20,11 +20,10 @@ import (
 	"fmt"
 	"strings"
 
-	"k8s.io/klog"
+	"k8s.io/klog/v2"
 )
 
-type visitorBase struct {
-}
+type visitorBase struct{}
 
 func (m *visitorBase) VisitString(path []string, v string, mutator func(string)) error {
 	klog.V(10).Infof("string value at %s: %s", strings.Join(path, "."), v)
@@ -48,9 +47,13 @@ type Visitor interface {
 }
 
 func visit(visitor Visitor, data interface{}, path []string, mutator func(interface{})) error {
-	switch data.(type) {
+	if data == nil {
+		return nil
+	}
+
+	switch data := data.(type) {
 	case string:
-		err := visitor.VisitString(path, data.(string), func(v string) {
+		err := visitor.VisitString(path, data, func(v string) {
 			mutator(v)
 		})
 		if err != nil {
@@ -58,7 +61,7 @@ func visit(visitor Visitor, data interface{}, path []string, mutator func(interf
 		}
 
 	case bool:
-		err := visitor.VisitBool(path, data.(bool), func(v bool) {
+		err := visitor.VisitBool(path, data, func(v bool) {
 			mutator(v)
 		})
 		if err != nil {
@@ -66,15 +69,15 @@ func visit(visitor Visitor, data interface{}, path []string, mutator func(interf
 		}
 
 	case float64:
-		err := visitor.VisitFloat64(path, data.(float64), func(v float64) {
+		err := visitor.VisitFloat64(path, data, func(v float64) {
 			mutator(v)
 		})
 		if err != nil {
 			return err
 		}
-
+	case nil:
 	case map[string]interface{}:
-		m := data.(map[string]interface{})
+		m := data
 		for k, v := range m {
 			path = append(path, k)
 
@@ -88,7 +91,7 @@ func visit(visitor Visitor, data interface{}, path []string, mutator func(interf
 		}
 
 	case []interface{}:
-		s := data.([]interface{})
+		s := data
 		for i, v := range s {
 			path = append(path, fmt.Sprintf("[%d]", i))
 

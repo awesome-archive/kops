@@ -1,5 +1,5 @@
 /*
-Copyright 2016 The Kubernetes Authors.
+Copyright 2019 The Kubernetes Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -16,13 +16,11 @@ limitations under the License.
 
 package dns
 
-import "strings"
+import (
+	"strings"
+)
 
 // TODO: Are .local names necessarily invalid for "real DNS"? Do we need more qualification here?
-func IsGossipHostname(name string) bool {
-	normalized := "." + strings.TrimSuffix(name, ".")
-	if strings.HasSuffix(normalized, ".k8s.local") {
-		return true
-	}
-	return false
+func IsGossipClusterName(name string) bool {
+	return strings.HasSuffix(strings.TrimSuffix(name, "."), ".k8s.local")
 }

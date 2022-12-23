@@ -1,5 +1,5 @@
 /*
-Copyright 2016 The Kubernetes Authors.
+Copyright 2019 The Kubernetes Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -16,18 +16,9 @@ limitations under the License.
 
 package main // import "k8s.io/kops/cmd/kops"
 
-import (
-	"fmt"
-	"os"
-)
+import "context"
 
 func main() {
-	Execute()
-}
-
-// exitWithError will terminate execution with an error result
-// It prints the error to stderr and exits with a non-zero exit code
-func exitWithError(err error) {
-	fmt.Fprintf(os.Stderr, "\n%v\n", err)
-	os.Exit(1)
+	ctx := context.Background()
+	Execute(ctx)
 }

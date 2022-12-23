@@ -5,49 +5,34 @@
 
 Get one or many secrets.
 
-### Synopsis
-
-Display one or many secrets.
-
 ```
-kops get secrets [flags]
+kops get secrets [SECRET_NAME]... [flags]
 ```
 
 ### Examples
 
 ```
-  # Get a secret
-  kops get secrets kube -oplaintext
+  # List the secrets
+  kops get secrets
   
-  # Get the admin password for a cluster
+  # Get the admin static token for a cluster
   kops get secrets admin -oplaintext
 ```
 
 ### Options
 
 ```
-  -h, --help          help for secrets
-      --type string   Filter by secret type
+  -h, --help   help for secrets
 ```
 
 ### Options inherited from parent commands
 
 ```
-      --alsologtostderr                  log to standard error as well as files
-      --config string                    yaml config file (default is $HOME/.kops.yaml)
-      --log_backtrace_at traceLocation   when logging hits line file:N, emit a stack trace (default :0)
-      --log_dir string                   If non-empty, write log files in this directory
-      --log_file string                  If non-empty, use this log file
-      --log_file_max_size uint           Defines the maximum size a log file can grow to. Unit is megabytes. If the value is 0, the maximum file size is unlimited. (default 1800)
-      --logtostderr                      log to standard error instead of files (default true)
-      --name string                      Name of cluster. Overrides KOPS_CLUSTER_NAME environment variable
-  -o, --output string                    output format.  One of: table, yaml, json (default "table")
-      --skip_headers                     If true, avoid header prefixes in the log messages
-      --skip_log_headers                 If true, avoid headers when openning log files
-      --state string                     Location of state storage (kops 'config' file). Overrides KOPS_STATE_STORE environment variable
-      --stderrthreshold severity         logs at or above this threshold go to stderr (default 2)
-  -v, --v Level                          number for the log level verbosity
-      --vmodule moduleSpec               comma-separated list of pattern=N settings for file-filtered logging
+      --config string   yaml config file (default is $HOME/.kops.yaml)
+      --name string     Name of cluster. Overrides KOPS_CLUSTER_NAME environment variable
+  -o, --output string   output format. One of: table, yaml, json (default "table")
+      --state string    Location of state storage (kops 'config' file). Overrides KOPS_STATE_STORE environment variable
+  -v, --v Level         number for the log level verbosity
 ```
 
 ### SEE ALSO

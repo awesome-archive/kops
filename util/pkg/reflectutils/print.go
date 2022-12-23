@@ -1,5 +1,5 @@
 /*
-Copyright 2016 The Kubernetes Authors.
+Copyright 2019 The Kubernetes Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -21,7 +21,7 @@ import (
 	"fmt"
 	"reflect"
 
-	"k8s.io/klog"
+	"k8s.io/klog/v2"
 
 	"k8s.io/kops/pkg/values"
 )
@@ -41,7 +41,7 @@ func RegisterPrinter(p Printer) {
 func ValueAsString(value reflect.Value) string {
 	b := &bytes.Buffer{}
 
-	walker := func(path string, field *reflect.StructField, v reflect.Value) error {
+	walker := func(path *FieldPath, field *reflect.StructField, v reflect.Value) error {
 		if IsPrimitiveValue(v) || v.Kind() == reflect.String {
 			fmt.Fprintf(b, "%v", v.Interface())
 			return SkipReflection
@@ -94,7 +94,7 @@ func ValueAsString(value reflect.Value) string {
 			for _, p := range printers {
 				s, ok := p(intf)
 				if ok {
-					fmt.Fprintf(b, s)
+					fmt.Fprintf(b, "%s", s)
 					done = true
 					break
 				}
@@ -102,7 +102,7 @@ func ValueAsString(value reflect.Value) string {
 
 			if !done {
 				klog.V(4).Infof("Unhandled kind in asString for %q: %T", path, v.Interface())
-				fmt.Fprint(b, values.DebugAsJsonString(intf))
+				fmt.Fprint(b, values.DebugAsJSONString(intf))
 			}
 
 			return SkipReflection
@@ -113,7 +113,7 @@ func ValueAsString(value reflect.Value) string {
 		}
 	}
 
-	err := ReflectRecursive(value, walker)
+	err := ReflectRecursive(value, walker, &ReflectOptions{DeprecatedDoubleVisit: true})
 	if err != nil {
 		klog.Fatalf("unexpected error during reflective walk: %v", err)
 	}
